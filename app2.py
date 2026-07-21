@@ -8,7 +8,6 @@ import re
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -312,7 +311,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
     return df_angles
 
 # ------------------------------------------------------------
-# ГЕНЕРАЦИЯ ОТЧЁТОВ (новые функции)
+# ГЕНЕРАЦИЯ ОТЧЁТОВ (исправленные функции)
 # ------------------------------------------------------------
 def generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L):
     output = io.BytesIO()
@@ -331,20 +330,6 @@ def generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L
 def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, report_params):
     """
     Генерирует PDF-отчёт в стиле научно-технического отчёта.
-    report_params: dict с полями:
-        - organization: str
-        - address: str
-        - phone: str
-        - email: str
-        - object_name: str
-        - address_obj: str
-        - customer: str
-        - cycle_number: str
-        - date: str
-        - limit_kren_mm_m: float
-        - calc_kren_mm_m: float
-        - исполнитель: str
-        - zero_cycle: str (будет передан отдельно)
     """
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -352,11 +337,12 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
 
     # --- Титульный лист ---
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 50, report_params.get('organization', 'ООО "Геофундамент"'))
+    c.drawString(50, height - 50, report_params.get('организация', 'ООО "Геофундамент"'))
     c.setFont("Helvetica", 12)
-    c.drawString(50, height - 70, f"Адрес: {report_params.get('address', '111673, Москва, ул. Суздальская д. 18 корп. 4')}")
+    c.drawString(50, height - 70, f"Адрес: {report_params.get('address', 'г. Москва, ул. Суздальская, д. 18, корп. 4')}")
     c.drawString(50, height - 90, f"Тел.: {report_params.get('phone', '8 499 399-30-60')}")
     c.drawString(50, height - 110, f"E-mail: {report_params.get('email', 'geofundament@mail.ru')}")
+
     c.line(50, height - 120, width - 50, height - 120)
 
     c.setFont("Helvetica-Bold", 14)
@@ -364,14 +350,18 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 180, f"По результатам {report_params.get('cycle_number', '')} цикла наблюдений")
     c.drawString(50, height - 200, f"от {report_params.get('date', '')}")
+
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, height - 230, f"Объект: {report_params.get('object_name', '')}")
     c.drawString(50, height - 250, f"Адрес: {report_params.get('address_obj', '')}")
+
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 280, f"Заказчик: {report_params.get('customer', '')}")
+
     c.setFont("Helvetica", 10)
     c.drawString(50, height - 320, f"Исполнитель: {report_params.get('исполнитель', '')}")
     c.drawString(50, height - 340, f"Дата: {datetime.now().strftime('%d.%m.%Y')}")
+
     c.showPage()
 
     # --- Введение ---
@@ -387,49 +377,49 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
     # --- Результаты ---
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, height - 110, "2. РЕЗУЛЬТАТЫ НАБЛЮДЕНИЙ")
-    c.setFont("Helvetica", 10)
+
     if df_incl is not None and not df_incl.empty:
-        # Определяем нулевой цикл и последний
+        # Определяем нулевой цикл
         zero_cycle = report_params.get('zero_cycle', df_incl['Цикл'].min())
-        # Берём этаж 5 или минимальный
+        last_cycle = df_incl['Цикл'].max()
+        # Выбираем этаж 5, если есть, иначе минимальный
         floors = df_incl['Этаж'].unique()
         target_floor = 5 if 5 in floors else min(floors)
-        df_floor = df_incl[df_incl['Этаж'] == target_floor]
-        # Сортируем по дате
-        df_floor_sorted = df_floor.sort_values('Цикл')
-        if not df_floor_sorted.empty:
-            # Берём последнюю запись как последний цикл
-            last_row = df_floor_sorted.iloc[-1]
-            last_cycle = last_row['Цикл']
-            zero_row = df_floor_sorted[df_floor_sorted['Цикл'] == zero_cycle]
-            if not zero_row.empty:
-                zero_x = zero_row['αx_abs'].iloc[0] if 'αx_abs' in zero_row else zero_row['αx'].iloc[0]
-                zero_y = zero_row['αy_abs'].iloc[0] if 'αy_abs' in zero_row else zero_row['αy'].iloc[0]
-                last_x = last_row['αx_abs'].iloc[0] if 'αx_abs' in last_row else last_row['αx'].iloc[0]
-                last_y = last_row['αy_abs'].iloc[0] if 'αy_abs' in last_row else last_row['αy'].iloc[0]
-                delta_x_deg = last_x - zero_x
-                delta_y_deg = last_y - zero_y
-                delta_x_mm_m = delta_x_deg * 1000 / L
-                delta_y_mm_m = delta_y_deg * 1000 / L
+        df_floor = df_incl[df_incl['Этаж'] == target_floor].copy()
 
-                c.drawString(50, height - 140, f"Цикл «нулевой» ({zero_cycle}) и последний цикл ({last_cycle})")
-                c.drawString(50, height - 160, f"Прирост угла наклона по оси X: {delta_x_deg:.3f}° ({delta_x_mm_m:.2f} мм/м)")
-                c.drawString(50, height - 180, f"Прирост угла наклона по оси Y: {delta_y_deg:.3f}° ({delta_y_mm_m:.2f} мм/м)")
+        # Проверяем наличие колонки αx_abs, если нет – используем αx
+        if 'αx_abs' not in df_floor.columns:
+            df_floor['αx_abs'] = df_floor['αx']
+            df_floor['αy_abs'] = df_floor['αy']
 
-                # Сравнение с предельными
-                limit_kren = report_params.get('limit_kren_mm_m', 2.0)
-                calc_kren = report_params.get('calc_kren_mm_m', 1.84)
-                c.drawString(50, height - 210, "Сравнение с предельными значениями:")
-                c.drawString(50, height - 230, f"Расчётное значение: {calc_kren} мм/м")
-                c.drawString(50, height - 250, f"Предельно допустимое значение: {limit_kren} мм/м")
-                if delta_x_mm_m <= limit_kren and delta_y_mm_m <= limit_kren:
-                    c.drawString(50, height - 270, "Полученные значения не превысили допустимые величины.")
-                else:
-                    c.drawString(50, height - 270, "ВНИМАНИЕ: Полученные значения превышают допустимые величины!")
+        zero_row = df_floor[df_floor['Цикл'] == zero_cycle]
+        last_row = df_floor[df_floor['Цикл'] == last_cycle]
+
+        if not zero_row.empty and not last_row.empty:
+            zero_x = zero_row['αx_abs'].values[0]
+            zero_y = zero_row['αy_abs'].values[0]
+            last_x = last_row['αx_abs'].values[0]
+            last_y = last_row['αy_abs'].values[0]
+            delta_x_deg = last_x - zero_x
+            delta_y_deg = last_y - zero_y
+            # Переводим в мм/м
+            delta_x_mm_m = delta_x_deg * 1000 / L
+            delta_y_mm_m = delta_y_deg * 1000 / L
+
+            c.setFont("Helvetica", 10)
+            c.drawString(50, height - 140, f"Цикл «нулевой» ({zero_cycle}) и последний цикл ({last_cycle})")
+            c.drawString(50, height - 160, f"Прирост угла наклона по оси X: {delta_x_deg:.3f}° ({delta_x_mm_m:.2f} мм/м)")
+            c.drawString(50, height - 180, f"Прирост угла наклона по оси Y: {delta_y_deg:.3f}° ({delta_y_mm_m:.2f} мм/м)")
+
+            limit_kren = report_params.get('limit_kren_mm_m', 2.0)
+            calc_kren = report_params.get('calc_kren_mm_m', 1.84)
+            c.drawString(50, height - 210, "Сравнение с предельными значениями:")
+            c.drawString(50, height - 230, f"Расчётное значение: {calc_kren} мм/м")
+            c.drawString(50, height - 250, f"Предельно допустимое значение: {limit_kren} мм/м")
+            if delta_x_mm_m <= limit_kren and delta_y_mm_m <= limit_kren:
+                c.drawString(50, height - 270, "Полученные значения не превысили допустимые величины.")
             else:
-                c.drawString(50, height - 140, "Не найден нулевой цикл для сравнения.")
-        else:
-            c.drawString(50, height - 140, "Нет данных для выбранного этажа.")
+                c.drawString(50, height - 270, "ВНИМАНИЕ: Полученные значения превышают допустимые величины!")
 
     # --- Выводы ---
     c.showPage()
@@ -440,6 +430,8 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
     c.drawString(50, height - 100, "- Деформации (углы наклона) строящегося здания не превышают расчётных и предельных значений.")
     c.drawString(50, height - 120, "- Техническое состояние объекта соответствует требованиям нормативных документов.")
     c.drawString(50, height - 140, "- Мониторинг следует продолжить в соответствии с программой наблюдений.")
+
+    c.setFont("Helvetica", 10)
     c.drawString(50, height - 180, f"Отчёт составил: {report_params.get('исполнитель', '')}")
     c.drawString(50, height - 200, f"Дата: {datetime.now().strftime('%d.%m.%Y')}")
 
@@ -458,18 +450,18 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
     font.size = Pt(12)
 
     # --- Титульный лист ---
-    doc.add_paragraph(report_params.get('organization', 'ООО "Геофундамент"'), style='Title')
-    doc.add_paragraph(f"Адрес: {report_params.get('address', '111673, Москва, ул. Суздальская д. 18 корп. 4')}")
+    doc.add_paragraph(report_params.get('организация', 'ООО "Геофундамент"'), style='Title')
+    doc.add_paragraph(f"Адрес: {report_params.get('address', 'г. Москва, ул. Суздальская, д. 18, корп. 4')}")
     doc.add_paragraph(f"Тел.: {report_params.get('phone', '8 499 399-30-60')}")
     doc.add_paragraph(f"E-mail: {report_params.get('email', 'geofundament@mail.ru')}")
-    doc.add_paragraph(' ')
+    doc.add_paragraph(' ' * 5)
     doc.add_heading('НАУЧНО-ТЕХНИЧЕСКИЙ ОТЧЕТ', level=1)
     doc.add_paragraph(f"По результатам {report_params.get('cycle_number', '')} цикла наблюдений")
     doc.add_paragraph(f"от {report_params.get('date', '')}")
     doc.add_paragraph(f"Объект: {report_params.get('object_name', '')}")
     doc.add_paragraph(f"Адрес: {report_params.get('address_obj', '')}")
     doc.add_paragraph(f"Заказчик: {report_params.get('customer', '')}")
-    doc.add_paragraph(' ')
+    doc.add_paragraph(' ' * 3)
     doc.add_paragraph(f"Исполнитель: {report_params.get('исполнитель', '')}")
     doc.add_paragraph(f"Дата: {datetime.now().strftime('%d.%m.%Y')}")
     doc.add_page_break()
@@ -485,43 +477,43 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
 
     # --- Результаты ---
     doc.add_heading('2. РЕЗУЛЬТАТЫ НАБЛЮДЕНИЙ', level=1)
+
     if df_incl is not None and not df_incl.empty:
         zero_cycle = report_params.get('zero_cycle', df_incl['Цикл'].min())
+        last_cycle = df_incl['Цикл'].max()
         floors = df_incl['Этаж'].unique()
         target_floor = 5 if 5 in floors else min(floors)
-        df_floor = df_incl[df_incl['Этаж'] == target_floor]
-        df_floor_sorted = df_floor.sort_values('Цикл')
-        if not df_floor_sorted.empty:
-            last_row = df_floor_sorted.iloc[-1]
-            last_cycle = last_row['Цикл']
-            zero_row = df_floor_sorted[df_floor_sorted['Цикл'] == zero_cycle]
-            if not zero_row.empty:
-                zero_x = zero_row['αx_abs'].iloc[0] if 'αx_abs' in zero_row else zero_row['αx'].iloc[0]
-                zero_y = zero_row['αy_abs'].iloc[0] if 'αy_abs' in zero_row else zero_row['αy'].iloc[0]
-                last_x = last_row['αx_abs'].iloc[0] if 'αx_abs' in last_row else last_row['αx'].iloc[0]
-                last_y = last_row['αy_abs'].iloc[0] if 'αy_abs' in last_row else last_row['αy'].iloc[0]
-                delta_x_deg = last_x - zero_x
-                delta_y_deg = last_y - zero_y
-                delta_x_mm_m = delta_x_deg * 1000 / L
-                delta_y_mm_m = delta_y_deg * 1000 / L
+        df_floor = df_incl[df_incl['Этаж'] == target_floor].copy()
+        if 'αx_abs' not in df_floor.columns:
+            df_floor['αx_abs'] = df_floor['αx']
+            df_floor['αy_abs'] = df_floor['αy']
 
-                doc.add_paragraph(f"Цикл «нулевой» ({zero_cycle}) и последний цикл ({last_cycle})")
-                doc.add_paragraph(f"Прирост угла наклона по оси X: {delta_x_deg:.3f}° ({delta_x_mm_m:.2f} мм/м)")
-                doc.add_paragraph(f"Прирост угла наклона по оси Y: {delta_y_deg:.3f}° ({delta_y_mm_m:.2f} мм/м)")
+        zero_row = df_floor[df_floor['Цикл'] == zero_cycle]
+        last_row = df_floor[df_floor['Цикл'] == last_cycle]
 
-                limit_kren = report_params.get('limit_kren_mm_m', 2.0)
-                calc_kren = report_params.get('calc_kren_mm_m', 1.84)
-                doc.add_paragraph("Сравнение с предельными значениями:")
-                doc.add_paragraph(f"Расчётное значение: {calc_kren} мм/м")
-                doc.add_paragraph(f"Предельно допустимое значение: {limit_kren} мм/м")
-                if delta_x_mm_m <= limit_kren and delta_y_mm_m <= limit_kren:
-                    doc.add_paragraph("Полученные значения не превысили допустимые величины.")
-                else:
-                    doc.add_paragraph("ВНИМАНИЕ: Полученные значения превышают допустимые величины!")
+        if not zero_row.empty and not last_row.empty:
+            zero_x = zero_row['αx_abs'].values[0]
+            zero_y = zero_row['αy_abs'].values[0]
+            last_x = last_row['αx_abs'].values[0]
+            last_y = last_row['αy_abs'].values[0]
+            delta_x_deg = last_x - zero_x
+            delta_y_deg = last_y - zero_y
+            delta_x_mm_m = delta_x_deg * 1000 / L
+            delta_y_mm_m = delta_y_deg * 1000 / L
+
+            doc.add_paragraph(f"Цикл «нулевой» ({zero_cycle}) и последний цикл ({last_cycle})")
+            doc.add_paragraph(f"Прирост угла наклона по оси X: {delta_x_deg:.3f}° ({delta_x_mm_m:.2f} мм/м)")
+            doc.add_paragraph(f"Прирост угла наклона по оси Y: {delta_y_deg:.3f}° ({delta_y_mm_m:.2f} мм/м)")
+
+            limit_kren = report_params.get('limit_kren_mm_m', 2.0)
+            calc_kren = report_params.get('calc_kren_mm_m', 1.84)
+            doc.add_paragraph("Сравнение с предельными значениями:")
+            doc.add_paragraph(f"Расчётное значение: {calc_kren} мм/м")
+            doc.add_paragraph(f"Предельно допустимое значение: {limit_kren} мм/м")
+            if delta_x_mm_m <= limit_kren and delta_y_mm_m <= limit_kren:
+                doc.add_paragraph("Полученные значения не превысили допустимые величины.")
             else:
-                doc.add_paragraph("Не найден нулевой цикл для сравнения.")
-        else:
-            doc.add_paragraph("Нет данных для выбранного этажа.")
+                doc.add_paragraph("ВНИМАНИЕ: Полученные значения превышают допустимые величины!")
 
     # --- Выводы ---
     doc.add_heading('3. ВЫВОДЫ', level=1)
@@ -553,7 +545,7 @@ def format_cycle_labels(df_incl, zero_cycle):
         sorted_cycles = sorted(unique_cycles, key=lambda x: try_parse_date(x) or x)
     except:
         sorted_cycles = sorted(unique_cycles)
-    
+
     labels = {}
     for i, cyc in enumerate(sorted_cycles):
         if cyc == zero_cycle:
@@ -603,7 +595,7 @@ if uploaded_file is not None:
             search_start = None
             search_end = None
 
-        # ---- Парсинг наклономера ----
+        # Парсинг наклономера
         df_incl = parse_inclinometer_data(file_bytes, incl_sheet_name, search_start=search_start, search_end=search_end)
 
         if df_incl is None:
@@ -640,7 +632,26 @@ if uploaded_file is not None:
         if df_incl is None:
             st.stop()
 
-        # ---- Основная область с вкладками ----
+        # --- Боковая панель: параметры отчёта ---
+        st.sidebar.header("Параметры отчёта")
+        report_params = {
+            'организация': st.sidebar.text_input("Организация", "ООО «Геофундамент»"),
+            'address': st.sidebar.text_input("Адрес организации", "111673, Москва, ул. Суздальская д. 18 корп. 4"),
+            'phone': st.sidebar.text_input("Телефон", "8 499 399-30-60"),
+            'email': st.sidebar.text_input("E-mail", "geofundament@mail.ru"),
+            'object_name': st.sidebar.text_input("Объект", "Многофункциональный жилой комплекс"),
+            'address_obj': st.sidebar.text_input("Адрес объекта", "г. Москва, ул. Крылатская, влд. 23, стр. 1"),
+            'customer': st.sidebar.text_input("Заказчик", "ООО СЗ «Сампад»"),
+            'cycle_number': st.sidebar.text_input("Номер цикла", "6-й цикл"),
+            'date': st.sidebar.text_input("Дата цикла", datetime.now().strftime("%d.%m.%Y")),
+            'limit_kren_mm_m': st.sidebar.number_input("Предельный крен (мм/м)", value=2.0, step=0.1),
+            'calc_kren_mm_m': st.sidebar.number_input("Расчётный крен (мм/м)", value=1.84, step=0.1),
+            'исполнитель': st.sidebar.text_input("Исполнитель", "Добшиков А.Н."),
+            'zero_cycle': st.sidebar.selectbox("Нулевой цикл (для отчёта)", sorted(df_incl['Цикл'].unique()), index=0)
+        }
+        st.session_state.report_params = report_params
+
+        # --- Основная область с вкладками ---
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Данные и параметры", "📈 Графики", "📥 Отчёт", "📘 Наклономер"])
 
         with tab1:
@@ -672,6 +683,8 @@ if uploaded_file is not None:
             cycle_labels = format_cycle_labels(df_incl, zero_cycle)
             st.session_state.cycle_labels = cycle_labels
             st.session_state.zero_cycle = zero_cycle
+            # обновим параметр отчёта
+            st.session_state.report_params['zero_cycle'] = zero_cycle
 
             st.subheader("🎯 Выбор этажей для отображения на графиках")
             available_floors = sorted(df_incl['Этаж'].unique())
@@ -683,26 +696,7 @@ if uploaded_file is not None:
             )
             st.session_state.selected_floors = selected_floors
 
-            # ---- Параметры отчёта (боковая панель) ----
-            st.sidebar.header("Параметры отчёта")
-            report_params = {
-                'organization': st.sidebar.text_input("Организация", "ООО «Геофундамент»"),
-                'address': st.sidebar.text_input("Адрес организации", "111673, Москва, ул. Суздальская д. 18 корп. 4"),
-                'phone': st.sidebar.text_input("Телефон", "8 499 399-30-60"),
-                'email': st.sidebar.text_input("E-mail", "geofundament@mail.ru"),
-                'object_name': st.sidebar.text_input("Объект", "Многофункциональный жилой комплекс"),
-                'address_obj': st.sidebar.text_input("Адрес объекта", "г. Москва, ул. Крылатская, влд. 23, стр. 1"),
-                'customer': st.sidebar.text_input("Заказчик", "ООО СЗ «Сампад»"),
-                'cycle_number': st.sidebar.text_input("Номер цикла", "6-й цикл"),
-                'date': st.sidebar.text_input("Дата цикла", datetime.now().strftime("%d.%m.%Y")),
-                'limit_kren_mm_m': st.sidebar.number_input("Предельный крен (мм/м)", value=2.0, step=0.01, format="%.2f"),
-                'calc_kren_mm_m': st.sidebar.number_input("Расчётный крен (мм/м)", value=1.84, step=0.01, format="%.2f"),
-                'исполнитель': st.sidebar.text_input("Исполнитель", "Добшиков А.Н."),
-                'zero_cycle': zero_cycle
-            }
-            st.session_state.report_params = report_params
-
-            # ---- Блок осадок ----
+            # Блок осадок
             sett_sheets = [s for s in all_sheets if 'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
             if sett_sheets:
                 st.subheader("📐 Данные осадок")
@@ -850,6 +844,7 @@ if uploaded_file is not None:
 
             if not kren_df.empty:
                 fig4 = go.Figure()
+                cycle_labels = st.session_state.get('cycle_labels', {})
                 x_labels = [cycle_labels.get(c, c) for c in kren_df['Цикл']]
                 fig4.add_trace(go.Scatter(
                     x=x_labels,
@@ -884,7 +879,7 @@ if uploaded_file is not None:
             else:
                 st.warning("Нет данных для расчёта среднего крена.")
 
-            # ---- Сравнение с осадками ----
+            # ---- Сравнение с осадками (если есть) ----
             df_sett_angles = st.session_state.get('df_sett_angles', None)
             if df_sett_angles is not None and not df_sett_angles.empty:
                 st.subheader("📊 Сравнение итогового крена здания с осадками")
@@ -905,6 +900,7 @@ if uploaded_file is not None:
                         st.write("**Последний цикл осадок:**")
                         st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']].to_frame().T)
                 else:
+                    cycle_labels = st.session_state.get('cycle_labels', {})
                     merged['Цикл_метка'] = merged['Цикл'].map(cycle_labels)
                     fig2 = go.Figure()
                     fig2.add_trace(go.Scatter(
@@ -952,9 +948,8 @@ if uploaded_file is not None:
 
         with tab3:
             st.subheader("📥 Скачать отчёт")
-            report_params = st.session_state.get('report_params', {})
-            # Передаём нулевой цикл из session_state
-            report_params['zero_cycle'] = st.session_state.get('zero_cycle', '')
+            # Добавим кнопку для обновления параметров отчёта
+            st.info("Параметры отчёта настраиваются в левой боковой панели.")
             col1, col2, col3 = st.columns(3)
             with col1:
                 excel_data = generate_excel_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L)
@@ -965,7 +960,7 @@ if uploaded_file is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             with col2:
-                pdf_data = generate_pdf_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, report_params)
+                pdf_data = generate_pdf_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, st.session_state.report_params)
                 st.download_button(
                     label="📄 PDF",
                     data=pdf_data.getvalue(),
@@ -973,7 +968,7 @@ if uploaded_file is not None:
                     mime="application/pdf"
                 )
             with col3:
-                word_data = generate_word_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, report_params)
+                word_data = generate_word_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, st.session_state.report_params)
                 st.download_button(
                     label="📝 Word",
                     data=word_data.getvalue(),
