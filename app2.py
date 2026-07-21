@@ -28,7 +28,7 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
     """
     Парсит лист 'Наклономер' из вашего Excel-файла.
     Если manual_floor_rows задан (словарь {этаж: номер_строки}), использует его.
-    Иначе ищет автоматически.
+    Иначе ищет автоматически в верхней части листа (до появления слова 'Таблица').
     Возвращает DataFrame с колонками: Цикл, Этаж, αx, αy.
     """
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -61,7 +61,6 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
         for cell in df_raw.iloc[cycle_header_row, 1:]:
             if pd.notna(cell):
                 cell_str = str(cell)
-                # Ищем дату в формате ДД.ММ.ГГГГ
                 match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
                 if match:
                     try:
@@ -80,11 +79,22 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
     if manual_floor_rows is not None:
         floor_rows = manual_floor_rows
     else:
-        # Ищем автоматически: ищем строки, где в любой ячейке есть числа 5,15,27 и много чисел
+        # Ищем автоматически: ищем строки с числами 5,15,27 между строкой заголовка и первым появлением "Таблица"
         floor_rows = {}
+        # Находим строку, где встречается "Таблица" или "Ведомость" (чтобы ограничить поиск)
+        table_start_row = None
         for idx, row in df_raw.iterrows():
-            if idx <= cycle_header_row:
-                continue
+            row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
+            if 'Таблица' in row_str or 'Ведомость' in row_str:
+                table_start_row = idx
+                break
+
+        # Определяем диапазон поиска
+        start_search = cycle_header_row + 1 if cycle_header_row is not None else 0
+        end_search = table_start_row if table_start_row is not None else len(df_raw)
+
+        for idx in range(start_search, end_search):
+            row = df_raw.iloc[idx]
             # Проверяем наличие числа 5,15,27 в любой ячейке
             floor = None
             for cell in row:
@@ -96,16 +106,16 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
                     floor = int(match.group(1))
                     break
             if floor is not None:
-                # Проверяем, что в строке достаточно чисел (пар)
+                # Проверяем, что в строке достаточно чисел (хотя бы 6)
                 num_count = sum(1 for cell in row if pd.notna(cell) and isinstance(cell, (int, float)))
-                if num_count >= 4:  # хотя бы 4 числа (2 пары)
+                if num_count >= 6:
                     floor_rows[floor] = idx
             if len(floor_rows) == 3:  # если нашли все три, можно остановиться
                 break
-        # Если не нашли 27, это нормально
+
         if len(floor_rows) < 2:
             st.warning("Не удалось автоматически найти строки с этажами (5, 15).")
-            st.write("Первые 30 строк листа:")
+            st.write("Первые 30 строк листа (верхняя часть):")
             st.dataframe(df_raw.head(30))
             return None
 
@@ -478,7 +488,6 @@ if uploaded_file is not None:
             try:
                 corner_marks = [x.strip() for x in corner_marks_str.split(',') if x.strip()]
                 # Поддерживаем как числа, так и строки (например, "1.1")
-                # Попробуем преобразовать в int, если получается
                 corner_marks_parsed = []
                 for m in corner_marks:
                     try:
