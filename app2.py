@@ -22,17 +22,16 @@ st.title("📐 Анализ данных накладного инклиноме
 st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики, профили и сформирует отчёты.")
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (адаптирован под структуру вашего файла)
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (с поддержкой ручного диапазона строк)
 # ------------------------------------------------------------
-def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
+def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=None, search_end=None):
     """
     Парсит лист 'Наклономер' из вашего Excel-файла.
     Если manual_floor_rows задан (словарь {этаж: номер_строки}), использует его.
-    Иначе ищет автоматически в верхней части листа (до появления слова 'Таблица').
+    Иначе ищет автоматически в диапазоне [search_start, search_end) или до появления 'Таблица'.
     Возвращает DataFrame с колонками: Цикл, Этаж, αx, αy.
     """
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
-    # Ищем лист с названием, содержащим "наклономер" или "крен"
     sheet_name = None
     for name in xl.sheet_names:
         if 'наклономер' in name.lower() or 'крен' in name.lower():
@@ -44,7 +43,7 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
 
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
 
-    # --- 1. Находим строку с заголовками циклов (она содержит слово "Цикл" и дату) ---
+    # --- 1. Находим строку с заголовками циклов ---
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
@@ -56,7 +55,6 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
         st.warning("Не найдена строка с заголовками циклов. Будем использовать порядковые номера.")
         cycle_labels = None
     else:
-        # Извлекаем даты из заголовков
         cycle_labels = []
         for cell in df_raw.iloc[cycle_header_row, 1:]:
             if pd.notna(cell):
@@ -72,30 +70,29 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
                     cycle_labels.append(cell_str)
             else:
                 cycle_labels.append("")
-        # Обрезаем пустые хвосты
         cycle_labels = [c for c in cycle_labels if c]
 
     # --- 2. Определяем строки с этажами ---
     if manual_floor_rows is not None:
         floor_rows = manual_floor_rows
     else:
-        # Ищем автоматически: ищем строки с числами 5,15,27 между строкой заголовка и первым появлением "Таблица"
+        # Если задан диапазон поиска, используем его
+        start_search = search_start if search_start is not None else (cycle_header_row + 1 if cycle_header_row is not None else 0)
+        end_search = search_end if search_end is not None else None
+
+        # Если конец не задан, ищем до появления "Таблица" или до конца
+        if end_search is None:
+            for idx in range(start_search, len(df_raw)):
+                row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
+                if 'Таблица' in row_str:
+                    end_search = idx
+                    break
+            if end_search is None:
+                end_search = len(df_raw)
+
         floor_rows = {}
-        # Находим строку, где встречается "Таблица" или "Ведомость" (чтобы ограничить поиск)
-        table_start_row = None
-        for idx, row in df_raw.iterrows():
-            row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-            if 'Таблица' in row_str or 'Ведомость' in row_str:
-                table_start_row = idx
-                break
-
-        # Определяем диапазон поиска
-        start_search = cycle_header_row + 1 if cycle_header_row is not None else 0
-        end_search = table_start_row if table_start_row is not None else len(df_raw)
-
         for idx in range(start_search, end_search):
             row = df_raw.iloc[idx]
-            # Проверяем наличие числа 5,15,27 в любой ячейке
             floor = None
             for cell in row:
                 if pd.isna(cell):
@@ -106,11 +103,10 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
                     floor = int(match.group(1))
                     break
             if floor is not None:
-                # Проверяем, что в строке достаточно чисел (хотя бы 6)
                 num_count = sum(1 for cell in row if pd.notna(cell) and isinstance(cell, (int, float)))
                 if num_count >= 6:
                     floor_rows[floor] = idx
-            if len(floor_rows) == 3:  # если нашли все три, можно остановиться
+            if len(floor_rows) == 3:
                 break
 
         if len(floor_rows) < 2:
@@ -119,10 +115,9 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
             st.dataframe(df_raw.head(30))
             return None
 
-    # Сортируем по этажам
     floor_rows_sorted = [floor_rows[f] for f in sorted(floor_rows.keys())]
 
-    # --- 3. Если не нашли заголовки, создаём метки циклов по количеству пар ---
+    # --- 3. Если не нашли заголовки, создаём метки циклов ---
     max_pairs = 0
     floor_pairs = {}
     for floor_idx in floor_rows_sorted:
@@ -148,7 +143,6 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
     # --- 4. Собираем данные ---
     data = []
     for floor_idx in floor_rows_sorted:
-        # Определяем этаж (из ячейки с числом 5,15,27)
         floor_val = None
         for cell in df_raw.iloc[floor_idx, :]:
             if pd.isna(cell):
@@ -161,7 +155,6 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
         if floor_val is None:
             continue
 
-        # Извлекаем числовые значения
         values = []
         for cell in df_raw.iloc[floor_idx, 1:]:
             if pd.notna(cell) and isinstance(cell, (int, float)):
@@ -194,19 +187,11 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ ОСАДОК (работает с листами "Стилобат" и "Высотная часть")
+# ПАРСИНГ ДАННЫХ ОСАДОК (без изменений)
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
-    """
-    Парсит лист с осадками, где строки - марки, столбцы - циклы.
-    Ожидается, что в строке с заголовками есть слово "Цикл" и дата.
-    Для каждого цикла есть три колонки: Отметка, Осадка, Общая осадка.
-    Берём колонку "Общая осадка" (или "Осадка").
-    Возвращает DataFrame с колонками: Цикл, a_мм_м, b_мм_м (уклоны по осям).
-    """
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
 
-    # --- Находим строку с заголовками циклов ---
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
@@ -217,13 +202,11 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
         st.error("Не найдена строка с заголовками циклов в листе осадок.")
         return None
 
-    # --- Определяем колонки для каждого цикла ---
     cycle_cols = {}
     for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
         if pd.notna(cell):
             cell_str = str(cell).strip()
             if 'Цикл' in cell_str:
-                # извлекаем дату
                 date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
                 if date_match:
                     try:
@@ -233,7 +216,6 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
                         cycle_label = cell_str
                 else:
                     cycle_label = cell_str
-                # ищем следующие колонки с "Осадка" или "Общая осадка"
                 for offset in [1, 2, 3]:
                     if col_idx + offset < len(df_raw.columns):
                         next_cell = df_raw.iloc[cycle_header_row, col_idx + offset]
@@ -252,7 +234,6 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
         st.error("Не найдены колонки с осадками для циклов.")
         return None
 
-    # --- Собираем данные по маркам ---
     mark_rows = []
     for idx, row in df_raw.iterrows():
         if idx <= cycle_header_row:
@@ -264,16 +245,13 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
         st.error("Не найдены строки с марками.")
         return None
 
-    # --- Извлекаем осадки для угловых марок ---
     data = []
     for cycle_label, col_idx in cycle_cols.items():
         for mark_idx in mark_rows:
             mark_num = df_raw.iloc[mark_idx, 0]
-            # Для числовых марок
             if isinstance(mark_num, (int, float)):
                 mark_num = int(mark_num)
             else:
-                # Для марок вида "1.1", "2.1" и т.д. приводим к строке
                 mark_num = str(mark_num).strip()
             if mark_num not in corner_marks:
                 continue
@@ -291,7 +269,6 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
 
     df_sett = pd.DataFrame(data)
 
-    # --- Вычисляем уклоны для каждого цикла ---
     if len(corner_marks) != 4:
         st.error("Должно быть ровно 4 угловые марки.")
         return None
@@ -324,7 +301,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     return df_angles
 
 # ------------------------------------------------------------
-# ГЕНЕРАЦИЯ ОТЧЁТОВ
+# ГЕНЕРАЦИЯ ОТЧЁТОВ (без изменений)
 # ------------------------------------------------------------
 def generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L):
     output = io.BytesIO()
@@ -413,11 +390,23 @@ if uploaded_file is not None:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
         all_sheets = xl.sheet_names
 
+        # --- Боковая панель: параметры поиска наклономера ---
+        st.sidebar.header("Параметры поиска наклономера")
+        use_manual_range = st.sidebar.checkbox("Использовать ручной диапазон строк для поиска этажей", value=False)
+        if use_manual_range:
+            search_start = st.sidebar.number_input("Начальная строка (индекс)", min_value=0, step=1, value=0)
+            search_end = st.sidebar.number_input("Конечная строка (индекс)", min_value=0, step=1, value=30)
+        else:
+            search_start = None
+            search_end = None
+
         # ------------------------------------------------------------
-        # 1. Парсинг наклономера с возможностью ручного ввода
+        # 1. Парсинг наклономера
         # ------------------------------------------------------------
-        df_incl = parse_inclinometer_data(file_bytes)
+        df_incl = parse_inclinometer_data(file_bytes, search_start=search_start, search_end=search_end)
+
         if df_incl is None:
+            # Если автоматический поиск не удался, предлагаем ручной ввод строк
             st.subheader("🔧 Ручной ввод строк с этажами")
             st.write("Введите номера строк (индексы, начиная с 0), в которых расположены данные для этажей 5, 15, 27.")
             st.info("Номера строк можно увидеть в таблице выше (левая колонка — это индекс).")
@@ -458,8 +447,8 @@ if uploaded_file is not None:
             st.error("Нет циклов в данных наклономера.")
             st.stop()
 
-        # --- Боковая панель: параметры наклономера ---
-        st.sidebar.header("Параметры наклономера")
+        # --- Параметры расчёта ---
+        st.sidebar.header("Параметры расчёта")
         zero_cycle = st.sidebar.selectbox("Нулевой цикл (для вычитания начального угла)", cycles, index=0)
         alpha0_x = st.sidebar.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
         alpha0_y = st.sidebar.number_input("Начальный угол Y (αy0), °", value=0.0, step=0.001, format="%.3f")
@@ -487,7 +476,6 @@ if uploaded_file is not None:
             )
             try:
                 corner_marks = [x.strip() for x in corner_marks_str.split(',') if x.strip()]
-                # Поддерживаем как числа, так и строки (например, "1.1")
                 corner_marks_parsed = []
                 for m in corner_marks:
                     try:
@@ -542,7 +530,6 @@ if uploaded_file is not None:
         # Сравнение с осадками, если есть
         if df_sett_angles is not None and not df_sett_angles.empty:
             st.subheader("📊 Сравнение углов по осадкам и наклономеру")
-            # Сопоставим по датам (берём этаж 5, т.к. на нём обычно установлен наклономер)
             merged = pd.merge(df_incl[df_incl['Этаж'] == 5], df_sett_angles, on='Цикл', how='inner')
             if merged.empty:
                 st.warning("Циклы осадок и наклономера не совпадают по датам. Сравнение по порядку циклов.")
