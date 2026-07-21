@@ -9,7 +9,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-import openpyxl  # для чтения через openpyxl
 
 # ------------------------------------------------------------
 # Настройки страницы
@@ -23,36 +22,30 @@ st.title("📐 Анализ данных накладного инклиноме
 st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики, профили и сформирует отчёты.")
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (через openpyxl)
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (через pandas, с ручным выбором листа)
 # ------------------------------------------------------------
-def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=None, search_end=None):
+def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, search_start=None, search_end=None):
     """
-    Парсит лист 'Наклономер' через openpyxl (data_only=True).
+    Читает указанный лист через pandas (header=None) и извлекает данные наклономера.
     Если manual_floor_rows задан (словарь {этаж: номер_строки}), использует его.
     Иначе ищет автоматически в диапазоне [search_start, search_end) или до появления 'Таблица'.
     Возвращает DataFrame с колонками: Цикл, Этаж, αx, αy.
     """
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-    
-    sheet = None
-    for name in wb.sheetnames:
-        if 'наклономер' in name.lower() or 'крен' in name.lower():
-            sheet = wb[name]
-            break
-    if sheet is None:
-        st.error("Не найден лист с данными наклономера. Проверьте файл.")
+    try:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
+    except Exception as e:
+        st.error(f"Не удалось прочитать лист '{sheet_name}': {e}")
         return None
 
-    total_rows = sheet.max_row
-    total_cols = sheet.max_column
+    total_rows = len(df_raw)
+    total_cols = len(df_raw.columns)
 
     # 1. Находим строку с заголовками циклов
     cycle_header_row = None
-    for row_idx in range(1, total_rows + 1):
-        row_values = [sheet.cell(row=row_idx, column=col).value for col in range(1, total_cols + 1)]
-        row_str = ' '.join(str(cell) for cell in row_values if cell is not None)
+    for idx, row in df_raw.iterrows():
+        row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
         if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
-            cycle_header_row = row_idx
+            cycle_header_row = idx
             break
 
     if cycle_header_row is None:
@@ -60,9 +53,9 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
         cycle_labels = None
     else:
         cycle_labels = []
-        for col in range(2, total_cols + 1):
-            cell = sheet.cell(row=cycle_header_row, column=col).value
-            if cell is not None:
+        for col in range(1, total_cols):  # с колонки 1 (второй столбец)
+            cell = df_raw.iloc[cycle_header_row, col]
+            if pd.notna(cell):
                 cell_str = str(cell)
                 match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
                 if match:
@@ -81,9 +74,9 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
     if manual_floor_rows is not None:
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
-            if 1 <= row_idx <= total_rows:
-                row_values = [sheet.cell(row=row_idx, column=col).value for col in range(1, total_cols + 1)]
-                num_count = sum(1 for v in row_values if v is not None and isinstance(v, (int, float)))
+            if 0 <= row_idx < total_rows:
+                row = df_raw.iloc[row_idx]
+                num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
                 if num_count >= 6:
                     floor_rows[floor] = row_idx
                 else:
@@ -95,28 +88,28 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
             return None
     else:
         if search_start is None:
-            search_start = cycle_header_row + 1 if cycle_header_row is not None else 1
+            search_start = cycle_header_row + 1 if cycle_header_row is not None else 0
         if search_end is None:
-            end_search = total_rows + 1
-            for row_idx in range(search_start, total_rows + 1):
-                row_values = [sheet.cell(row=row_idx, column=col).value for col in range(1, total_cols + 1)]
-                row_str = ' '.join(str(cell) for cell in row_values if cell is not None)
+            # Ищем до появления "Таблица" или до конца
+            end_search = total_rows
+            for idx in range(search_start, total_rows):
+                row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
                 if 'Таблица' in row_str:
-                    end_search = row_idx
+                    end_search = idx
                     break
             search_end = end_search
         else:
             search_end = min(search_end, total_rows)
 
-        search_start = max(1, min(search_start, total_rows))
+        search_start = max(0, min(search_start, total_rows-1))
         search_end = max(search_start, search_end)
 
         floor_rows = {}
-        for row_idx in range(search_start, search_end + 1):
-            row_values = [sheet.cell(row=row_idx, column=col).value for col in range(1, total_cols + 1)]
+        for idx in range(search_start, search_end):
+            row = df_raw.iloc[idx]
             found_floor = None
-            for cell in row_values:
-                if cell is None:
+            for cell in row:
+                if pd.isna(cell):
                     continue
                 cell_str = str(cell).strip()
                 match = re.search(r'\b(5|15|27)\b', cell_str)
@@ -124,20 +117,16 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
                     found_floor = int(match.group(1))
                     break
             if found_floor is not None:
-                num_count = sum(1 for v in row_values if v is not None and isinstance(v, (int, float)))
+                num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
                 if num_count >= 6:
-                    floor_rows[found_floor] = row_idx
+                    floor_rows[found_floor] = idx
             if len(floor_rows) == 3:
                 break
 
         if len(floor_rows) < 2:
             st.warning("Не удалось автоматически найти строки с этажами (5, 15).")
-            preview = []
-            for r in range(1, min(31, total_rows + 1)):
-                row_vals = [sheet.cell(row=r, column=c).value for c in range(1, min(10, total_cols + 1))]
-                preview.append(row_vals)
             st.write("Первые 30 строк листа (первые 10 колонок):")
-            st.dataframe(pd.DataFrame(preview))
+            st.dataframe(df_raw.iloc[:30, :10])
             return None
 
     floor_rows_sorted = [floor_rows[f] for f in sorted(floor_rows.keys())]
@@ -145,9 +134,9 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
     max_pairs = 0
     for floor_idx in floor_rows_sorted:
         values = []
-        for col in range(2, total_cols + 1):
-            cell = sheet.cell(row=floor_idx, column=col).value
-            if cell is not None and isinstance(cell, (int, float)):
+        for col in range(1, total_cols):
+            cell = df_raw.iloc[floor_idx, col]
+            if pd.notna(cell) and isinstance(cell, (int, float)):
                 values.append(float(cell))
         pairs = []
         if len(values) % 2 == 0:
@@ -165,10 +154,11 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
 
     data = []
     for floor_idx in floor_rows_sorted:
+        # Определяем этаж из ячейки с номером
         floor_val = None
-        for col in range(1, total_cols + 1):
-            cell = sheet.cell(row=floor_idx, column=col).value
-            if cell is None:
+        for col in range(0, total_cols):
+            cell = df_raw.iloc[floor_idx, col]
+            if pd.isna(cell):
                 continue
             cell_str = str(cell).strip()
             match = re.search(r'\b(5|15|27)\b', cell_str)
@@ -179,9 +169,9 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
             continue
 
         values = []
-        for col in range(2, total_cols + 1):
-            cell = sheet.cell(row=floor_idx, column=col).value
-            if cell is not None and isinstance(cell, (int, float)):
+        for col in range(1, total_cols):
+            cell = df_raw.iloc[floor_idx, col]
+            if pd.notna(cell) and isinstance(cell, (int, float)):
                 values.append(float(cell))
         pairs = []
         if len(values) % 2 == 0:
@@ -211,7 +201,7 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ ОСАДОК (через pandas)
+# ПАРСИНГ ДАННЫХ ОСАДОК (без изменений)
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -325,7 +315,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     return df_angles
 
 # ------------------------------------------------------------
-# ГЕНЕРАЦИЯ ОТЧЁТОВ
+# ГЕНЕРАЦИЯ ОТЧЁТОВ (без изменений)
 # ------------------------------------------------------------
 def generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L):
     output = io.BytesIO()
@@ -414,20 +404,29 @@ if uploaded_file is not None:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
         all_sheets = xl.sheet_names
 
-        # --- Боковая панель: параметры поиска наклономера ---
-        st.sidebar.header("Параметры поиска наклономера")
+        # --- Боковая панель: выбор листа с наклономером ---
+        st.sidebar.header("Выбор листа с наклономером")
+        incl_sheet_name = st.sidebar.selectbox(
+            "Выберите лист, содержащий данные наклономера (инклинометра)",
+            all_sheets,
+            index=all_sheets.index('Наклономер') if 'Наклономер' in all_sheets else 0
+        )
+        st.sidebar.write(f"Выбран лист: **{incl_sheet_name}**")
+
+        # --- Дополнительные параметры поиска ---
+        st.sidebar.header("Параметры поиска строк")
         use_manual_range = st.sidebar.checkbox("Использовать ручной диапазон строк для поиска этажей", value=False)
         if use_manual_range:
-            search_start = st.sidebar.number_input("Начальная строка (индекс)", min_value=0, step=1, value=7)
-            search_end = st.sidebar.number_input("Конечная строка (индекс)", min_value=0, step=1, value=13)
+            search_start = st.sidebar.number_input("Начальная строка (индекс, 0-база)", min_value=0, step=1, value=7)
+            search_end = st.sidebar.number_input("Конечная строка (индекс, 0-база)", min_value=0, step=1, value=13)
         else:
             search_start = None
             search_end = None
 
         # ------------------------------------------------------------
-        # 1. Парсинг наклономера
+        # 1. Парсинг наклономера с указанным листом
         # ------------------------------------------------------------
-        df_incl = parse_inclinometer_data(file_bytes, search_start=search_start, search_end=search_end)
+        df_incl = parse_inclinometer_data(file_bytes, incl_sheet_name, search_start=search_start, search_end=search_end)
 
         if df_incl is None:
             # Если автоматический поиск не удался, предлагаем ручной ввод строк
@@ -450,7 +449,7 @@ if uploaded_file is not None:
                     manual_rows[15] = row_15
                 if row_27 >= 0:
                     manual_rows[27] = row_27
-                df_incl = parse_inclinometer_data(file_bytes, manual_floor_rows=manual_rows)
+                df_incl = parse_inclinometer_data(file_bytes, incl_sheet_name, manual_floor_rows=manual_rows)
                 if df_incl is None:
                     st.error("Не удалось извлечь данные даже с ручным указанием строк. Проверьте структуру листа.")
                     st.stop()
@@ -524,7 +523,7 @@ if uploaded_file is not None:
                     st.sidebar.error("Укажите 4 угловые марки.")
 
         # ------------------------------------------------------------
-        # 3. Графики
+        # 3. Графики (без изменений)
         # ------------------------------------------------------------
         st.subheader("📈 Изменение абсолютных углов наклона по циклам (наклономер)")
         fig = go.Figure()
