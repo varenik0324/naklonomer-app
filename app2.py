@@ -337,16 +337,15 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L):
     c.drawString(50, height - 100, f"Параметры: αx0 = {alpha0_x:.3f}°, αy0 = {alpha0_y:.3f}°, L = {L} м")
     c.drawString(50, height - 120, f"Нулевой цикл: {cycles[0] if cycles else ''}")
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, height - 150, "Углы наклона всего здания (последний цикл):")
+    c.drawString(50, height - 150, "Итоговый крен здания (средний по всем этажам):")
     y = height - 170
     if df_incl is not None and not df_incl.empty:
         last_cycle = df_incl['Цикл'].iloc[-1]
-        # берём минимальный этаж
-        min_floor = df_incl['Этаж'].min()
-        row = df_incl[(df_incl['Цикл'] == last_cycle) & (df_incl['Этаж'] == min_floor)]
-        if not row.empty:
-            c.setFont("Helvetica", 10)
-            c.drawString(60, y, f"αx = {row['αx_abs'].iloc[0]:.3f}°, αy = {row['αy_abs'].iloc[0]:.3f}°")
+        df_cycle = df_incl[df_incl['Цикл'] == last_cycle]
+        avg_x = df_cycle['αx_abs'].mean()
+        avg_y = df_cycle['αy_abs'].mean()
+        c.setFont("Helvetica", 10)
+        c.drawString(60, y, f"αx_ср = {avg_x:.3f}°, αy_ср = {avg_y:.3f}°")
     c.save()
     buffer.seek(0)
     return buffer
@@ -357,13 +356,13 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L)
     doc.add_paragraph(f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     doc.add_paragraph(f"Параметры: αx0 = {alpha0_x:.3f}°, αy0 = {alpha0_y:.3f}°, L = {L} м")
     doc.add_paragraph(f"Нулевой цикл: {cycles[0] if cycles else ''}")
-    doc.add_heading('Углы наклона всего здания (последний цикл)', level=2)
+    doc.add_heading('Итоговый крен здания (средний по всем этажам)', level=2)
     if df_incl is not None and not df_incl.empty:
         last_cycle = df_incl['Цикл'].iloc[-1]
-        min_floor = df_incl['Этаж'].min()
-        row = df_incl[(df_incl['Цикл'] == last_cycle) & (df_incl['Этаж'] == min_floor)]
-        if not row.empty:
-            doc.add_paragraph(f"αx = {row['αx_abs'].iloc[0]:.3f}°, αy = {row['αy_abs'].iloc[0]:.3f}°")
+        df_cycle = df_incl[df_incl['Цикл'] == last_cycle]
+        avg_x = df_cycle['αx_abs'].mean()
+        avg_y = df_cycle['αy_abs'].mean()
+        doc.add_paragraph(f"αx_ср = {avg_x:.3f}°, αy_ср = {avg_y:.3f}°")
     doc.add_paragraph("© Геофундамент, 2026").alignment = WD_ALIGN_PARAGRAPH.CENTER
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -648,131 +647,122 @@ if uploaded_file is not None:
                     )
                     st.plotly_chart(fig1, use_container_width=True)
 
-                    # ---- НОВЫЙ ГРАФИК: Абсолютный угол наклона всего здания ----
-                    st.subheader("📊 Абсолютный угол наклона всего здания (по выбранному этажу)")
-                    st.markdown("""
-                    **ℹ️ Пояснение:** Этот график показывает изменение угла наклона всего здания по датам.  
-                    Выберите этаж, который лучше всего отражает крен здания (обычно самый нижний).  
-                    - **Синяя линия** – угол по оси X.  
-                    - **Красная линия** – угол по оси Y.
-                    """)
-                    
-                    available_floors = sorted(df_incl['Этаж'].unique())
-                    default_floor = available_floors[0]  # минимальный этаж
-                    selected_floor_for_kren = st.selectbox(
-                        "Выберите этаж, представляющий крен здания",
-                        available_floors,
-                        index=0
+            # ---- НОВЫЙ ГРАФИК: Итоговый крен здания (средний по всем этажам) ----
+            st.subheader("📊 Итоговый крен здания (средний по всем этажам)")
+            st.markdown("""
+            **ℹ️ Пояснение:** Этот график показывает обобщённый угол наклона всего здания, рассчитанный как **среднее арифметическое** абсолютных углов αx и αy по **всем этажам** для каждого цикла.  
+            - **Синяя линия** – средний угол по оси X.  
+            - **Красная линия** – средний угол по оси Y.  
+            - Среднее значение даёт интегральную оценку крена, сглаживая локальные отклонения отдельных этажей.
+            """)
+
+            # Группируем по циклу и считаем среднее
+            kren_df = df_incl.groupby('Цикл', as_index=False)[['αx_abs', 'αy_abs']].mean()
+            kren_df = kren_df.sort_values('Цикл')
+
+            if not kren_df.empty:
+                fig4 = go.Figure()
+                x_labels = [cycle_labels.get(c, c) for c in kren_df['Цикл']]
+                fig4.add_trace(go.Scatter(
+                    x=x_labels,
+                    y=kren_df['αx_abs'],
+                    mode='lines+markers',
+                    name='αx_средний',
+                    line=dict(color='blue', width=2),
+                    marker=dict(size=8)
+                ))
+                fig4.add_trace(go.Scatter(
+                    x=x_labels,
+                    y=kren_df['αy_abs'],
+                    mode='lines+markers',
+                    name='αy_средний',
+                    line=dict(color='red', width=2, dash='dot'),
+                    marker=dict(size=8, symbol='square')
+                ))
+                fig4.update_layout(
+                    title="Изменение среднего угла наклона здания по всем этажам",
+                    xaxis_title="Цикл",
+                    yaxis_title="Угол, °",
+                    template="plotly_white",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig4, use_container_width=True)
+                # Таблица
+                st.dataframe(
+                    kren_df[['Цикл', 'αx_abs', 'αy_abs']]
+                    .rename(columns={'αx_abs': 'αx_ср, °', 'αy_abs': 'αy_ср, °'})
+                    .assign(Цикл=lambda d: d['Цикл'].map(cycle_labels))
+                )
+            else:
+                st.warning("Нет данных для расчёта среднего крена.")
+
+            # ---- Сравнение с осадками (если есть) ----
+            df_sett_angles = st.session_state.get('df_sett_angles', None)
+            if df_sett_angles is not None and not df_sett_angles.empty:
+                st.subheader("📊 Сравнение итогового крена здания с осадками")
+                st.markdown("""
+                **ℹ️ Пояснение:** Сравнение среднего угла наклона по наклономеру (все этажи) с углами, рассчитанными по осадкам (a и b).  
+                - **Сплошные линии** – наклономер (среднее по этажам).  
+                - **Пунктирные линии** – осадки.  
+                - Совпадение линий подтверждает достоверность измерений.
+                """)
+                # Объединяем средний крен с осадками
+                merged = pd.merge(kren_df, df_sett_angles, on='Цикл', how='inner')
+                if merged.empty:
+                    st.warning("Нет общих циклов для сравнения с осадками. Показываем последние значения.")
+                    last_kren = kren_df.iloc[-1] if not kren_df.empty else None
+                    last_sett = df_sett_angles.iloc[-1] if not df_sett_angles.empty else None
+                    if last_kren is not None and last_sett is not None:
+                        st.write("**Последний цикл (средний крен):**")
+                        st.dataframe(last_kren[['Цикл', 'αx_abs', 'αy_abs']].to_frame().T)
+                        st.write("**Последний цикл осадок:**")
+                        st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']].to_frame().T)
+                else:
+                    merged['Цикл_метка'] = merged['Цикл'].map(cycle_labels)
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл_метка'],
+                        y=merged['αx_abs'],
+                        mode='lines+markers',
+                        name='αx_ср (наклономер)',
+                        line=dict(color='#1f77b4', width=2),
+                        marker=dict(size=8)
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл_метка'],
+                        y=merged['a_град'],
+                        mode='lines+markers',
+                        name='a (осадки)',
+                        line=dict(color='#ff7f0e', width=2, dash='dash'),
+                        marker=dict(size=8, symbol='diamond')
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл_метка'],
+                        y=merged['αy_abs'],
+                        mode='lines+markers',
+                        name='αy_ср (наклономер)',
+                        line=dict(color='#2ca02c', width=2),
+                        marker=dict(size=8)
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл_метка'],
+                        y=merged['b_град'],
+                        mode='lines+markers',
+                        name='b (осадки)',
+                        line=dict(color='#d62728', width=2, dash='dash'),
+                        marker=dict(size=8, symbol='diamond')
+                    ))
+
+                    fig2.update_layout(
+                        title="Сравнение среднего крена здания с осадками",
+                        xaxis_title="Цикл",
+                        yaxis_title="Угол, °",
+                        template="plotly_white",
+                        hovermode="x unified",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                     )
-                    
-                    kren_df = df_incl[df_incl['Этаж'] == selected_floor_for_kren].sort_values('Цикл')
-                    if not kren_df.empty:
-                        fig4 = go.Figure()
-                        x_labels = [cycle_labels.get(c, c) for c in kren_df['Цикл']]
-                        fig4.add_trace(go.Scatter(
-                            x=x_labels,
-                            y=kren_df['αx_abs'],
-                            mode='lines+markers',
-                            name=f'αx (эт.{selected_floor_for_kren})',
-                            line=dict(color='blue', width=2),
-                            marker=dict(size=8)
-                        ))
-                        fig4.add_trace(go.Scatter(
-                            x=x_labels,
-                            y=kren_df['αy_abs'],
-                            mode='lines+markers',
-                            name=f'αy (эт.{selected_floor_for_kren})',
-                            line=dict(color='red', width=2, dash='dot'),
-                            marker=dict(size=8, symbol='square')
-                        ))
-                        fig4.update_layout(
-                            title=f"Изменение угла наклона здания по этажу {selected_floor_for_kren}",
-                            xaxis_title="Цикл",
-                            yaxis_title="Угол, °",
-                            template="plotly_white",
-                            hovermode="x unified",
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                        )
-                        st.plotly_chart(fig4, use_container_width=True)
-                        # Таблица
-                        st.dataframe(
-                            kren_df[['Цикл', 'αx_abs', 'αy_abs']]
-                            .rename(columns={'αx_abs': 'αx, °', 'αy_abs': 'αy, °'})
-                            .assign(Цикл=lambda d: d['Цикл'].map(cycle_labels))
-                        )
-                    else:
-                        st.warning("Нет данных для выбранного этажа.")
-
-                    # ---- Сравнение с осадками (если есть) ----
-                    df_sett_angles = st.session_state.get('df_sett_angles', None)
-                    if df_sett_angles is not None and not df_sett_angles.empty:
-                        st.subheader("📊 Сравнение углов по осадкам и наклономеру (этаж 5)")
-                        st.markdown("""
-                        **ℹ️ Пояснение:** Сравнение углов наклона, полученных по данным наклономера (этаж 5) и по расчёту из осадок (углы a и b).  
-                        - **Сплошные линии** – наклономер.  
-                        - **Пунктирные линии** – осадки.  
-                        - Совпадение линий говорит о хорошей сходимости методов.
-                        """)
-                        floor_for_compare = 5
-                        if floor_for_compare not in df_incl['Этаж'].unique():
-                            floor_for_compare = df_incl['Этаж'].min()
-                        incl_compare = df_incl[df_incl['Этаж'] == floor_for_compare].copy()
-
-                        merged = pd.merge(incl_compare, df_sett_angles, on='Цикл', how='inner')
-                        if merged.empty:
-                            st.warning(f"Нет общих циклов для сравнения с осадками (этаж {floor_for_compare}). Показываем последние значения.")
-                            last_incl = incl_compare.iloc[-1] if not incl_compare.empty else None
-                            last_sett = df_sett_angles.iloc[-1] if not df_sett_angles.empty else None
-                            if last_incl is not None and last_sett is not None:
-                                st.write("**Последний цикл наклономера (этаж {})**:".format(floor_for_compare))
-                                st.dataframe(last_incl[['Цикл', 'αx_abs', 'αy_abs']].to_frame().T)
-                                st.write("**Последний цикл осадок**:")
-                                st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']].to_frame().T)
-                        else:
-                            merged['Цикл_метка'] = merged['Цикл'].map(cycle_labels)
-                            fig2 = go.Figure()
-                            fig2.add_trace(go.Scatter(
-                                x=merged['Цикл_метка'],
-                                y=merged['αx_abs'],
-                                mode='lines+markers',
-                                name='αx (наклономер)',
-                                line=dict(color='#1f77b4', width=2),
-                                marker=dict(size=8)
-                            ))
-                            fig2.add_trace(go.Scatter(
-                                x=merged['Цикл_метка'],
-                                y=merged['a_град'],
-                                mode='lines+markers',
-                                name='a (осадки)',
-                                line=dict(color='#ff7f0e', width=2, dash='dash'),
-                                marker=dict(size=8, symbol='diamond')
-                            ))
-                            fig2.add_trace(go.Scatter(
-                                x=merged['Цикл_метка'],
-                                y=merged['αy_abs'],
-                                mode='lines+markers',
-                                name='αy (наклономер)',
-                                line=dict(color='#2ca02c', width=2),
-                                marker=dict(size=8)
-                            ))
-                            fig2.add_trace(go.Scatter(
-                                x=merged['Цикл_метка'],
-                                y=merged['b_град'],
-                                mode='lines+markers',
-                                name='b (осадки)',
-                                line=dict(color='#d62728', width=2, dash='dash'),
-                                marker=dict(size=8, symbol='diamond')
-                            ))
-
-                            fig2.update_layout(
-                                title=f"Сравнение углов (этаж {floor_for_compare})",
-                                xaxis_title="Цикл",
-                                yaxis_title="Угол, °",
-                                template="plotly_white",
-                                hovermode="x unified",
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                            )
-                            st.plotly_chart(fig2, use_container_width=True)
+                    st.plotly_chart(fig2, use_container_width=True)
 
         with tab3:
             st.subheader("📥 Скачать отчёт")
