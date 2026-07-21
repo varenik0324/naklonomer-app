@@ -54,7 +54,10 @@ def parse_inclinometer_data(file_bytes):
 
     if cycle_header_row is None:
         st.warning("Не найдена строка с заголовками циклов. Будем использовать порядковые номера.")
-        cycle_labels = [f"Цикл {i+1}" for i in range(len(df_raw.columns)-1)]
+        # Определим количество циклов как количество числовых столбцов в строке с этажами (макс)
+        # Для этого возьмём первую строку с этажом и посчитаем числовые значения
+        # Проще: возьмём максимальное количество пар по этажам
+        cycle_labels = None
     else:
         # Извлекаем даты из заголовков
         cycle_labels = []
@@ -93,34 +96,38 @@ def parse_inclinometer_data(file_bytes):
 
     # --- 3. Собираем данные ---
     data = []
+    max_pairs = 0
+    # Сначала соберём все пары для каждого этажа, чтобы определить максимальное количество циклов
+    floor_pairs = {}
     for floor in sorted(floor_rows.keys()):
         row_idx = floor_rows[floor]
-        # Извлекаем все числовые значения из строки, начиная с колонки 1 (индекс 1)
         values = []
         for cell in df_raw.iloc[row_idx, 1:]:
             if pd.notna(cell) and isinstance(cell, (int, float)):
                 values.append(float(cell))
-        # Разбиваем на пары (αx, αy)
         pairs = []
         if len(values) % 2 == 0:
             pairs = [(values[i], values[i+1]) for i in range(0, len(values), 2)]
         else:
-            # Если нечётное количество, отбрасываем последний
             pairs = [(values[i], values[i+1]) for i in range(0, len(values)-1, 2)]
+        floor_pairs[floor] = pairs
+        if len(pairs) > max_pairs:
+            max_pairs = len(pairs)
 
-        # Сопоставляем пары с циклами
+    # Если не нашли заголовки циклов, создаём их по количеству пар
+    if cycle_labels is None:
+        cycle_labels = [f"Цикл {i+1}" for i in range(max_pairs)]
+    elif len(cycle_labels) < max_pairs:
+        # Дополняем недостающие метки
+        for i in range(len(cycle_labels), max_pairs):
+            cycle_labels.append(f"Цикл {i+1}")
+
+    # Теперь заполняем данные
+    for floor, pairs in floor_pairs.items():
         for i, (ax, ay) in enumerate(pairs):
             if i < len(cycle_labels):
                 data.append({
                     'Цикл': cycle_labels[i],
-                    'Этаж': floor,
-                    'αx': ax,
-                    'αy': ay
-                })
-            else:
-                # Если пар больше, чем заголовков, добавляем с порядковым номером
-                data.append({
-                    'Цикл': f"Цикл {i+1}",
                     'Этаж': floor,
                     'αx': ax,
                     'αy': ay
