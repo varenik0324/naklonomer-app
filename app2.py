@@ -503,7 +503,6 @@ if uploaded_file is not None:
                 default=available_floors,
                 key="floor_selector"
             )
-            # Сохраняем в session_state для использования в других вкладках
             st.session_state.selected_floors = selected_floors
 
             # Блок осадок (если есть)
@@ -692,11 +691,22 @@ if uploaded_file is not None:
                             )
                             st.plotly_chart(fig2, use_container_width=True)
 
-                    # ---- График 3: Профиль смещений ----
-                    last_cycle = df_incl['Цикл'].iloc[-1]
-                    profile = df_incl[df_incl['Цикл'] == last_cycle].sort_values('Этаж')
-                    if not profile.empty:
-                        st.subheader(f"📊 Профиль смещений на цикле {last_cycle}")
+                    # ---- График 3: Профиль смещений (с выбором цикла) ----
+                    st.subheader("📊 Профиль смещений по этажам")
+                    
+                    # Выбор цикла для отображения профиля
+                    unique_cycles = sorted(df_incl['Цикл'].unique())
+                    selected_cycle = st.selectbox(
+                        "Выберите цикл для отображения профиля смещений",
+                        options=unique_cycles,
+                        index=len(unique_cycles)-1  # по умолчанию последний цикл
+                    )
+                    
+                    profile = df_incl[df_incl['Цикл'] == selected_cycle].sort_values('Этаж')
+                    
+                    if profile.empty:
+                        st.warning(f"Нет данных для цикла {selected_cycle}.")
+                    else:
                         fig3 = go.Figure()
                         fig3.add_trace(go.Scatter(
                             x=profile['Смещение X'],
@@ -736,7 +746,7 @@ if uploaded_file is not None:
                             )
 
                         fig3.update_layout(
-                            title=f"Профиль смещений (цикл {last_cycle})",
+                            title=f"Профиль смещений (цикл {selected_cycle})",
                             xaxis_title="Смещение, м",
                             yaxis_title="Этаж",
                             template="plotly_white",
