@@ -22,82 +22,46 @@ st.title("📐 Анализ данных накладного инклиноме
 st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики, профили и сформирует отчёты.")
 
 # ------------------------------------------------------------
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ПАРСИНГА
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (адаптирован под структуру вашего файла)
 # ------------------------------------------------------------
-
-def find_floor_rows(df_raw):
+def parse_inclinometer_data(file_bytes):
     """
-    Ищет строки, в которых в любой ячейке встречаются числа 5, 15, 27.
-    Возвращает словарь {floor: row_index} или None, если не найдены все три.
-    """
-    found = {}
-    for idx, row in df_raw.iterrows():
-        for cell in row:
-            if pd.isna(cell):
-                continue
-            cell_str = str(cell).strip()
-            # пробуем извлечь число из текста (например, "5 этаж" -> 5)
-            match = re.search(r'\b(5|15|27)\b', cell_str)
-            if match:
-                floor = int(match.group(1))
-                if floor not in found:
-                    found[floor] = idx
-                    if len(found) == 3:
-                        return found
-    return None
-
-def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
-    """
-    Парсит Excel-файл с данными наклономера.
-    Если manual_floor_rows задан (словарь {этаж: номер_строки}), использует его.
-    Иначе ищет автоматически.
-    Возвращает DataFrame с колонками: Цикл, Этаж, αx, αy.
+    Парсит лист 'Наклономер' из вашего Excel-файла.
+    Ищет строки с этажами (5, 15, 27) в первом столбце,
+    извлекает пары углов (αx, αy) из всех числовых значений в строке,
+    сопоставляет с заголовками циклов (датами).
     """
     xl = pd.ExcelFile(file_bytes)
-    sheet_names = xl.sheet_names
-
-    target_sheet = None
-    for name in sheet_names:
+    # Ищем лист с названием, содержащим "наклономер" или "крен"
+    sheet_name = None
+    for name in xl.sheet_names:
         if 'наклономер' in name.lower() or 'крен' in name.lower():
-            target_sheet = name
+            sheet_name = name
             break
-    if target_sheet is None:
-        target_sheet = sheet_names[0]
-        st.info(f"Лист с данными наклономера не найден, используется первый лист: {target_sheet}")
+    if sheet_name is None:
+        st.error("Не найден лист с данными наклономера. Проверьте файл.")
+        return None
 
-    df_raw = pd.read_excel(file_bytes, sheet_name=target_sheet, header=None)
+    df_raw = pd.read_excel(file_bytes, sheet_name=sheet_name, header=None)
 
-    # --- 1. Определяем строки с этажами ---
-    if manual_floor_rows is not None:
-        floor_rows = manual_floor_rows
-    else:
-        floor_rows = find_floor_rows(df_raw)
-        if floor_rows is None:
-            st.warning("Не удалось автоматически найти строки с этажами (5, 15, 27).")
-            st.write("Первые 20 строк листа:")
-            st.dataframe(df_raw.head(20))
-            return None
-
-    # Сортируем по этажам
-    floor_rows_sorted = [floor_rows[f] for f in sorted(floor_rows.keys())]
-
-    # --- 2. Находим строку с заголовками циклов ---
+    # --- 1. Находим строку с заголовками циклов (она содержит слово "Цикл" и дату) ---
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-        if 'Цикл' in row_str or re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
+        if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
             cycle_header_row = idx
             break
 
     if cycle_header_row is None:
-        st.warning("Заголовки циклов не найдены, будут использованы порядковые номера.")
-        num_cycles = len(df_raw.columns) - 1
-        cycle_labels = [f"Цикл {i+1}" for i in range(num_cycles)]
+        st.warning("Не найдена строка с заголовками циклов. Будем использовать порядковые номера.")
+        cycle_labels = [f"Цикл {i+1}" for i in range(len(df_raw.columns)-1)]
     else:
+        # Извлекаем даты из заголовков
         cycle_labels = []
         for cell in df_raw.iloc[cycle_header_row, 1:]:
             if pd.notna(cell):
                 cell_str = str(cell)
+                # Ищем дату в формате ДД.ММ.ГГГГ
                 match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
                 if match:
                     try:
@@ -109,48 +73,61 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
                     cycle_labels.append(cell_str)
             else:
                 cycle_labels.append("")
+        # Обрезаем до фактического количества циклов (убираем пустые хвосты)
+        cycle_labels = [c for c in cycle_labels if c]  # убираем пустые строки
 
-    # --- 3. Собираем данные по этажам ---
+    # --- 2. Ищем строки с этажами (в первом столбце числа 5, 15, 27) ---
+    floor_rows = {}
+    for idx, row in df_raw.iterrows():
+        if idx <= cycle_header_row:
+            continue  # пропускаем строки до заголовка
+        first_cell = row[0]
+        if pd.notna(first_cell) and isinstance(first_cell, (int, float)) and first_cell in [5, 15, 27]:
+            floor_rows[first_cell] = idx
+        if len(floor_rows) == 3:
+            break
+
+    if len(floor_rows) < 3:
+        st.error("Не найдены все строки с этажами (5, 15, 27). Проверьте файл.")
+        return None
+
+    # --- 3. Собираем данные ---
     data = []
-    for floor_idx in floor_rows_sorted:
-        # Определяем этаж из строки
-        floor_val = None
-        for cell in df_raw.iloc[floor_idx, :]:
-            if pd.isna(cell):
-                continue
-            cell_str = str(cell).strip()
-            match = re.search(r'\b(5|15|27)\b', cell_str)
-            if match:
-                floor_val = int(match.group(1))
-                break
-        if floor_val is None:
-            continue
-
-        # Извлекаем все числовые значения из строки, начиная с колонки 1
+    for floor in sorted(floor_rows.keys()):
+        row_idx = floor_rows[floor]
+        # Извлекаем все числовые значения из строки, начиная с колонки 1 (индекс 1)
         values = []
-        for cell in df_raw.iloc[floor_idx, 1:]:
+        for cell in df_raw.iloc[row_idx, 1:]:
             if pd.notna(cell) and isinstance(cell, (int, float)):
                 values.append(float(cell))
-
         # Разбиваем на пары (αx, αy)
         pairs = []
         if len(values) % 2 == 0:
             pairs = [(values[i], values[i+1]) for i in range(0, len(values), 2)]
         else:
-            # если нечётное количество, отбрасываем последнее
+            # Если нечётное количество, отбрасываем последний
             pairs = [(values[i], values[i+1]) for i in range(0, len(values)-1, 2)]
 
+        # Сопоставляем пары с циклами
         for i, (ax, ay) in enumerate(pairs):
             if i < len(cycle_labels):
                 data.append({
-                    'Цикл': cycle_labels[i] if cycle_labels[i] else f"Цикл {i+1}",
-                    'Этаж': floor_val,
+                    'Цикл': cycle_labels[i],
+                    'Этаж': floor,
+                    'αx': ax,
+                    'αy': ay
+                })
+            else:
+                # Если пар больше, чем заголовков, добавляем с порядковым номером
+                data.append({
+                    'Цикл': f"Цикл {i+1}",
+                    'Этаж': floor,
                     'αx': ax,
                     'αy': ay
                 })
 
     if not data:
-        st.error("Не удалось извлечь данные наклономера. Проверьте структуру файла.")
+        st.error("Не удалось извлечь данные наклономера. Проверьте структуру листа.")
         return None
 
     df = pd.DataFrame(data)
@@ -158,8 +135,13 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None):
     df['Этаж'] = df['Этаж'].astype(int)
     df['αx'] = pd.to_numeric(df['αx'], errors='coerce')
     df['αy'] = pd.to_numeric(df['αy'], errors='coerce')
+    # Удаляем строки с NaN (если есть)
+    df = df.dropna(subset=['αx', 'αy'])
     return df
 
+# ------------------------------------------------------------
+# ПАРСИНГ ДАННЫХ ОСАДОК (работает с листами "Стилобат" и "Высотная часть")
+# ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     """
     Парсит лист с осадками, где строки - марки, столбцы - циклы.
@@ -374,39 +356,15 @@ if uploaded_file is not None:
         all_sheets = xl.sheet_names
 
         # ------------------------------------------------------------
-        # 1. Парсинг наклономера с возможностью ручного ввода
+        # 1. Парсинг наклономера (улучшенный)
         # ------------------------------------------------------------
         df_incl = parse_inclinometer_data(file_bytes)
         if df_incl is None:
-            # Не удалось автоматически найти строки с этажами.
-            # Предлагаем пользователю вручную указать номера строк для этажей 5, 15, 27.
-            st.subheader("Ручной ввод строк с этажами")
-            st.write("Введите номера строк (индексы, начиная с 0), в которых расположены данные для этажей 5, 15, 27.")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                row_5 = st.number_input("Строка для этажа 5 (индекс)", min_value=0, step=1, value=0)
-            with col2:
-                row_15 = st.number_input("Строка для этажа 15", min_value=0, step=1, value=1)
-            with col3:
-                row_27 = st.number_input("Строка для этажа 27", min_value=0, step=1, value=2)
-
-            if st.button("Повторить парсинг с указанными строками"):
-                manual_rows = {5: row_5, 15: row_15, 27: row_27}
-                df_incl = parse_inclinometer_data(file_bytes, manual_floor_rows=manual_rows)
-                if df_incl is None:
-                    st.error("Не удалось извлечь данные даже с ручным указанием строк. Проверьте структуру файла.")
-                    st.stop()
-                else:
-                    st.success("✅ Данные наклономера успешно загружены!")
-            else:
-                st.info("Нажмите кнопку, чтобы повторить парсинг с указанными строками.")
-                st.stop()
-        else:
-            st.success(f"✅ Данные наклономера загружены автоматически. Найдено {len(df_incl)} записей.")
-
-        # После успешной загрузки df_incl продолжаем
-        if df_incl is None:
+            st.error("Не удалось загрузить данные наклономера. Проверьте структуру листа.")
             st.stop()
+
+        st.success(f"✅ Данные наклономера загружены. Найдено {len(df_incl)} записей.")
+        st.dataframe(df_incl, use_container_width=True)
 
         cycles = sorted(df_incl['Цикл'].unique())
         if len(cycles) == 0:
@@ -427,8 +385,6 @@ if uploaded_file is not None:
         df_incl['αy_abs'] = df_incl['αy'] - df_incl['αy0_inc'] + alpha0_y
         df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
         df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
-
-        st.dataframe(df_incl, use_container_width=True)
 
         # ------------------------------------------------------------
         # 2. Парсинг осадок (если есть подходящие листы)
@@ -491,7 +447,7 @@ if uploaded_file is not None:
         # Сравнение с осадками, если есть
         if df_sett_angles is not None and not df_sett_angles.empty:
             st.subheader("📊 Сравнение углов по осадкам и наклономеру")
-            # Сопоставим по датам
+            # Сопоставим по датам (берём этаж 5, т.к. на нём обычно установлен наклономер)
             merged = pd.merge(df_incl[df_incl['Этаж'] == 5], df_sett_angles, on='Цикл', how='inner')
             if merged.empty:
                 st.warning("Циклы осадок и наклономера не совпадают по датам. Сравнение по порядку циклов.")
