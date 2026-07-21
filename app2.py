@@ -42,6 +42,7 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
         return None
 
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
+    total_rows = len(df_raw)
 
     # --- 1. Находим строку с заголовками циклов ---
     cycle_header_row = None
@@ -80,15 +81,24 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
         start_search = search_start if search_start is not None else (cycle_header_row + 1 if cycle_header_row is not None else 0)
         end_search = search_end if search_end is not None else None
 
-        # Если конец не задан, ищем до появления "Таблица" или до конца
+        # Корректируем границы, чтобы не выходить за пределы DataFrame
+        if start_search >= total_rows:
+            st.error(f"Начальная строка {start_search} выходит за пределы данных (всего строк: {total_rows})")
+            return None
+        if end_search is not None and end_search > total_rows:
+            end_search = total_rows
         if end_search is None:
-            for idx in range(start_search, len(df_raw)):
+            # Если конец не задан, ищем до появления "Таблица" или до конца
+            table_row = None
+            for idx in range(start_search, total_rows):
                 row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
                 if 'Таблица' in row_str:
-                    end_search = idx
+                    table_row = idx
                     break
-            if end_search is None:
-                end_search = len(df_raw)
+            end_search = table_row if table_row is not None else total_rows
+        if start_search >= end_search:
+            st.error("Начальная строка должна быть меньше конечной.")
+            return None
 
         floor_rows = {}
         for idx in range(start_search, end_search):
