@@ -31,7 +31,7 @@ def parse_inclinometer_data(file_bytes):
     извлекает пары углов (αx, αy) из всех числовых значений в строке,
     сопоставляет с заголовками циклов (датами).
     """
-    xl = pd.ExcelFile(file_bytes)
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
     # Ищем лист с названием, содержащим "наклономер" или "крен"
     sheet_name = None
     for name in xl.sheet_names:
@@ -42,7 +42,7 @@ def parse_inclinometer_data(file_bytes):
         st.error("Не найден лист с данными наклономера. Проверьте файл.")
         return None
 
-    df_raw = pd.read_excel(file_bytes, sheet_name=sheet_name, header=None)
+    df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
 
     # --- 1. Находим строку с заголовками циклов (она содержит слово "Цикл" и дату) ---
     cycle_header_row = None
@@ -150,7 +150,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     Берём колонку "Общая осадка" (или "Осадка").
     Возвращает DataFrame с колонками: Цикл, a_мм_м, b_мм_м (уклоны по осям).
     """
-    df_raw = pd.read_excel(file_bytes, sheet_name=sheet_name, header=None)
+    df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
 
     # --- Находим строку с заголовками циклов ---
     cycle_header_row = None
@@ -352,11 +352,11 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     try:
         file_bytes = uploaded_file.read()
-        xl = pd.ExcelFile(file_bytes)
+        xl = pd.ExcelFile(io.BytesIO(file_bytes))  # <--- исправлено
         all_sheets = xl.sheet_names
 
         # ------------------------------------------------------------
-        # 1. Парсинг наклономера (улучшенный)
+        # 1. Парсинг наклономера
         # ------------------------------------------------------------
         df_incl = parse_inclinometer_data(file_bytes)
         if df_incl is None:
