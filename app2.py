@@ -31,6 +31,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     Если manual_floor_rows задан (словарь {этаж: номер_строки}), использует его.
     Иначе ищет автоматически в диапазоне [search_start, search_end) или до появления 'Таблица'.
     Возвращает DataFrame с колонками: Цикл, Этаж, αx, αy.
+    Цикл – строка в формате 'YYYY-MM-DD' (если удалось распознать дату), иначе 'Цикл N'.
     """
     try:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -52,12 +53,15 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     if cycle_header_row is None:
         st.warning("Не найдена строка с заголовками циклов. Будем использовать порядковые номера.")
         cycle_labels = None
+        cycle_raw_texts = None
     else:
         cycle_labels = []
-        for col in range(1, total_cols):  # с колонки 1 (второй столбец)
+        cycle_raw_texts = []
+        for col in range(1, total_cols):
             cell = df_raw.iloc[cycle_header_row, col]
             if pd.notna(cell):
-                cell_str = str(cell)
+                cell_str = str(cell).strip()
+                cycle_raw_texts.append(cell_str)
                 match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
                 if match:
                     try:
@@ -68,8 +72,10 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
                 else:
                     cycle_labels.append(cell_str)
             else:
+                cycle_raw_texts.append("")
                 cycle_labels.append("")
         cycle_labels = [c for c in cycle_labels if c]
+        cycle_raw_texts = [t for t in cycle_raw_texts if t]
 
     # 2. Определяем строки с этажами
     if manual_floor_rows is not None:
@@ -91,7 +97,6 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         if search_start is None:
             search_start = cycle_header_row + 1 if cycle_header_row is not None else 0
         if search_end is None:
-            # Ищем до появления "Таблица" или до конца
             end_search = total_rows
             for idx in range(search_start, total_rows):
                 row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
@@ -150,12 +155,12 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     if cycle_labels is None:
         cycle_labels = [f"Цикл {i+1}" for i in range(max_pairs)]
     elif len(cycle_labels) < max_pairs:
+        # если не хватает меток, дополняем порядковыми номерами
         for i in range(len(cycle_labels), max_pairs):
             cycle_labels.append(f"Цикл {i+1}")
 
     data = []
     for floor_idx in floor_rows_sorted:
-        # Определяем этаж из ячейки с номером
         floor_val = None
         for col in range(0, total_cols):
             cell = df_raw.iloc[floor_idx, col]
@@ -391,6 +396,52 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L)
     return buffer
 
 # ------------------------------------------------------------
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ФОРМАТИРОВАНИЯ МЕТОК ЦИКЛОВ
+# ------------------------------------------------------------
+def format_cycle_labels(df_incl, zero_cycle):
+    """
+    Создаёт читаемые метки для циклов: 
+    - для нулевого цикла: "Нулевой (дд.мм.гггг)"
+    - для остальных: "Цикл N (дд.мм.гггг)", где N – порядковый номер (1,2,...),
+      сортировка по дате (если дата распознана), иначе по порядку появления.
+    """
+    # Получаем уникальные циклы и сортируем
+    unique_cycles = sorted(df_incl['Цикл'].unique())
+    # Попробуем преобразовать в даты для сортировки
+    def try_parse_date(s):
+        for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%d.%m.%Y'):
+            try:
+                return pd.to_datetime(s, format=fmt)
+            except:
+                continue
+        return None
+    # Сортируем по дате, если возможно
+    try:
+        sorted_cycles = sorted(unique_cycles, key=lambda x: try_parse_date(x) or x)
+    except:
+        sorted_cycles = sorted(unique_cycles)
+    
+    # Создаём словарь меток
+    labels = {}
+    for i, cyc in enumerate(sorted_cycles):
+        # Определяем, является ли цикл нулевым (сравниваем строки)
+        if cyc == zero_cycle:
+            # Пытаемся отформатировать дату
+            try:
+                dt = pd.to_datetime(cyc)
+                display = f"Нулевой ({dt.strftime('%d.%m.%Y')})"
+            except:
+                display = f"Нулевой ({cyc})"
+        else:
+            try:
+                dt = pd.to_datetime(cyc)
+                display = f"Цикл №{i} ({dt.strftime('%d.%m.%Y')})"
+            except:
+                display = f"Цикл №{i} ({cyc})"
+        labels[cyc] = display
+    return labels
+
+# ------------------------------------------------------------
 # ОСНОВНАЯ ЛОГИКА ПРИЛОЖЕНИЯ
 # ------------------------------------------------------------
 uploaded_file = st.file_uploader(
@@ -494,6 +545,11 @@ if uploaded_file is not None:
             df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
             df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
 
+            # Создаём читаемые метки для циклов (для отображения в выпадающих списках)
+            cycle_labels = format_cycle_labels(df_incl, zero_cycle)
+            st.session_state.cycle_labels = cycle_labels
+            st.session_state.zero_cycle = zero_cycle
+
             # --- Настройка этажей для графиков ---
             st.subheader("🎯 Выбор этажей для отображения на графиках")
             available_floors = sorted(df_incl['Этаж'].unique())
@@ -565,13 +621,18 @@ if uploaded_file is not None:
                     fig1 = go.Figure()
                     colors = px.colors.qualitative.Plotly
 
+                    # Получаем читаемые метки для циклов
+                    cycle_labels = st.session_state.get('cycle_labels', {})
+                    
                     for i, floor in enumerate(sorted(selected_floors)):
                         floor_df = df_filtered[df_filtered['Этаж'] == floor].sort_values('Цикл')
                         color = colors[i % len(colors)]
 
-                        # Углы X – сплошная линия, круглые маркеры
+                        # Используем отображаемые метки для оси X
+                        x_labels = [cycle_labels.get(c, c) for c in floor_df['Цикл']]
+
                         fig1.add_trace(go.Scatter(
-                            x=floor_df['Цикл'],
+                            x=x_labels,
                             y=floor_df['αx_abs'],
                             mode='lines+markers',
                             name=f'Этаж {floor} αx',
@@ -580,9 +641,8 @@ if uploaded_file is not None:
                             legendgroup=f'floor_{floor}',
                             legendgrouptitle_text=f'Этаж {floor}'
                         ))
-                        # Углы Y – пунктирная линия, квадратные маркеры
                         fig1.add_trace(go.Scatter(
-                            x=floor_df['Цикл'],
+                            x=x_labels,
                             y=floor_df['αy_abs'],
                             mode='lines+markers',
                             name=f'Этаж {floor} αy',
@@ -592,17 +652,19 @@ if uploaded_file is not None:
                             showlegend=False
                         ))
 
-                    # Аннотации максимальных значений
+                    # Аннотации максимумов (по всему набору)
                     max_x = df_filtered.loc[df_filtered['αx_abs'].idxmax()]
                     max_y = df_filtered.loc[df_filtered['αy_abs'].idxmax()]
                     fig1.add_annotation(
-                        x=max_x['Цикл'], y=max_x['αx_abs'],
+                        x=cycle_labels.get(max_x['Цикл'], max_x['Цикл']), 
+                        y=max_x['αx_abs'],
                         text=f"max αx = {max_x['αx_abs']:.3f}° (эт.{max_x['Этаж']})",
                         showarrow=True, arrowhead=2, ax=0, ay=-40,
                         font=dict(color='darkblue', size=11)
                     )
                     fig1.add_annotation(
-                        x=max_y['Цикл'], y=max_y['αy_abs'],
+                        x=cycle_labels.get(max_y['Цикл'], max_y['Цикл']),
+                        y=max_y['αy_abs'],
                         text=f"max αy = {max_y['αy_abs']:.3f}° (эт.{max_y['Этаж']})",
                         showarrow=True, arrowhead=2, ax=0, ay=40,
                         font=dict(color='darkred', size=11)
@@ -610,7 +672,7 @@ if uploaded_file is not None:
 
                     fig1.update_layout(
                         title="Абсолютные углы наклона по осям X и Y",
-                        xaxis_title="Цикл (дата)",
+                        xaxis_title="Цикл",
                         yaxis_title="Угол, °",
                         template="plotly_white",
                         hovermode="x unified",
@@ -647,9 +709,12 @@ if uploaded_file is not None:
                                 st.write("**Последний цикл осадок**:")
                                 st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']].to_frame().T)
                         else:
+                            # Используем читаемые метки для оси X
+                            merged['Цикл_метка'] = merged['Цикл'].map(cycle_labels)
+                            
                             fig2 = go.Figure()
                             fig2.add_trace(go.Scatter(
-                                x=merged['Цикл'],
+                                x=merged['Цикл_метка'],
                                 y=merged['αx_abs'],
                                 mode='lines+markers',
                                 name='αx (наклономер)',
@@ -657,7 +722,7 @@ if uploaded_file is not None:
                                 marker=dict(size=8)
                             ))
                             fig2.add_trace(go.Scatter(
-                                x=merged['Цикл'],
+                                x=merged['Цикл_метка'],
                                 y=merged['a_град'],
                                 mode='lines+markers',
                                 name='a (осадки)',
@@ -665,7 +730,7 @@ if uploaded_file is not None:
                                 marker=dict(size=8, symbol='diamond')
                             ))
                             fig2.add_trace(go.Scatter(
-                                x=merged['Цикл'],
+                                x=merged['Цикл_метка'],
                                 y=merged['αy_abs'],
                                 mode='lines+markers',
                                 name='αy (наклономер)',
@@ -673,7 +738,7 @@ if uploaded_file is not None:
                                 marker=dict(size=8)
                             ))
                             fig2.add_trace(go.Scatter(
-                                x=merged['Цикл'],
+                                x=merged['Цикл_метка'],
                                 y=merged['b_град'],
                                 mode='lines+markers',
                                 name='b (осадки)',
@@ -694,13 +759,24 @@ if uploaded_file is not None:
                     # ---- График 3: Профиль смещений (с выбором цикла) ----
                     st.subheader("📊 Профиль смещений по этажам")
                     
-                    # Выбор цикла для отображения профиля
+                    # Формируем список циклов с читаемыми метками для выбора
                     unique_cycles = sorted(df_incl['Цикл'].unique())
-                    selected_cycle = st.selectbox(
+                    cycle_display = [cycle_labels.get(c, c) for c in unique_cycles]
+                    # Выбираем индекс последнего
+                    default_idx = len(unique_cycles) - 1
+                    selected_display = st.selectbox(
                         "Выберите цикл для отображения профиля смещений",
-                        options=unique_cycles,
-                        index=len(unique_cycles)-1  # по умолчанию последний цикл
+                        options=cycle_display,
+                        index=default_idx
                     )
+                    # Находим соответствующий реальный цикл
+                    selected_cycle = None
+                    for real, display in cycle_labels.items():
+                        if display == selected_display:
+                            selected_cycle = real
+                            break
+                    if selected_cycle is None:
+                        selected_cycle = unique_cycles[default_idx]
                     
                     profile = df_incl[df_incl['Цикл'] == selected_cycle].sort_values('Этаж')
                     
@@ -746,7 +822,7 @@ if uploaded_file is not None:
                             )
 
                         fig3.update_layout(
-                            title=f"Профиль смещений (цикл {selected_cycle})",
+                            title=f"Профиль смещений (цикл {selected_display})",
                             xaxis_title="Смещение, м",
                             yaxis_title="Этаж",
                             template="plotly_white",
