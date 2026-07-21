@@ -1,7 +1,7 @@
 streamlit
 pandas
 numpy
-plotly
+plotly.express
 openpyxl
 xlsxwriter
 reportlab
