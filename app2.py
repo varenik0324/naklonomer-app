@@ -22,7 +22,7 @@ st.title("📐 Анализ данных накладного инклиноме
 st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики, профили и сформирует отчёты.")
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (через pandas, с ручным выбором листа)
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (через pandas)
 # ------------------------------------------------------------
 def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, search_start=None, search_end=None):
     """
@@ -201,7 +201,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ ОСАДОК (без изменений)
+# ПАРСИНГ ДАННЫХ ОСАДОК
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -315,7 +315,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B):
     return df_angles
 
 # ------------------------------------------------------------
-# ГЕНЕРАЦИЯ ОТЧЁТОВ (без изменений)
+# ГЕНЕРАЦИЯ ОТЧЁТОВ
 # ------------------------------------------------------------
 def generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L):
     output = io.BytesIO()
@@ -390,12 +390,12 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L)
     return buffer
 
 # ------------------------------------------------------------
-# ОСНОВНАЯ ЛОГИКА ПРИЛОЖЕНИЯ
+# ОСНОВНАЯ ЛОГИКА ПРИЛОЖЕНИЯ (с вкладками)
 # ------------------------------------------------------------
 uploaded_file = st.file_uploader(
     "Загрузите Excel-файл с данными наклономера и/или осадок",
     type=["xlsx", "xls"],
-    help="Файл должен содержать лист с наклономером (строки с этажами 5,15,27) и, опционально, листы с осадками ('Стилобат', 'Высотная часть')."
+    help="Файл должен содержать лист с наклономером (строки с этажами 5,15,27) и, опционально, листы с осадками."
 )
 
 if uploaded_file is not None:
@@ -404,42 +404,41 @@ if uploaded_file is not None:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
         all_sheets = xl.sheet_names
 
-        # --- Боковая панель: выбор листа с наклономером ---
-        st.sidebar.header("Выбор листа с наклономером")
+        # --- Боковая панель: выбор листов и поиск ---
+        st.sidebar.header("Выбор листов")
         incl_sheet_name = st.sidebar.selectbox(
-            "Выберите лист, содержащий данные наклономера (инклинометра)",
+            "Лист с наклономером",
             all_sheets,
             index=all_sheets.index('Наклономер') if 'Наклономер' in all_sheets else 0
         )
-        st.sidebar.write(f"Выбран лист: **{incl_sheet_name}**")
+        st.sidebar.write(f"Выбран: **{incl_sheet_name}**")
 
-        # --- Дополнительные параметры поиска ---
         st.sidebar.header("Параметры поиска строк")
-        use_manual_range = st.sidebar.checkbox("Использовать ручной диапазон строк для поиска этажей", value=False)
+        use_manual_range = st.sidebar.checkbox("Ручной диапазон для поиска этажей", value=False)
         if use_manual_range:
-            search_start = st.sidebar.number_input("Начальная строка (индекс, 0-база)", min_value=0, step=1, value=7)
-            search_end = st.sidebar.number_input("Конечная строка (индекс, 0-база)", min_value=0, step=1, value=13)
+            search_start = st.sidebar.number_input("Начальная строка (индекс)", min_value=0, step=1, value=7)
+            search_end = st.sidebar.number_input("Конечная строка (индекс)", min_value=0, step=1, value=13)
         else:
             search_start = None
             search_end = None
 
         # ------------------------------------------------------------
-        # 1. Парсинг наклономера с указанным листом
+        # 1. Парсинг наклономера
         # ------------------------------------------------------------
         df_incl = parse_inclinometer_data(file_bytes, incl_sheet_name, search_start=search_start, search_end=search_end)
 
         if df_incl is None:
-            # Если автоматический поиск не удался, предлагаем ручной ввод строк
+            # Ручной ввод строк
             st.subheader("🔧 Ручной ввод строк с этажами")
             st.write("Введите номера строк (индексы, начиная с 0), в которых расположены данные для этажей 5, 15, 27.")
             st.info("Номера строк можно увидеть в таблице выше (левая колонка — это индекс).")
             col1, col2, col3 = st.columns(3)
             with col1:
-                row_5 = st.number_input("Строка для этажа 5 (индекс)", min_value=0, step=1, value=0)
+                row_5 = st.number_input("Строка для этажа 5", min_value=0, step=1, value=0)
             with col2:
                 row_15 = st.number_input("Строка для этажа 15", min_value=0, step=1, value=1)
             with col3:
-                row_27 = st.number_input("Строка для этажа 27 (если есть)", min_value=0, step=1, value=2)
+                row_27 = st.number_input("Строка для этажа 27", min_value=0, step=1, value=2)
 
             if st.button("Повторить парсинг с указанными строками"):
                 manual_rows = {}
@@ -463,200 +462,215 @@ if uploaded_file is not None:
         if df_incl is None:
             st.stop()
 
-        st.dataframe(df_incl, use_container_width=True)
+        # --- Основная область с вкладками ---
+        tab1, tab2, tab3 = st.tabs(["📊 Данные и параметры", "📈 Графики", "📥 Отчёт"])
 
-        cycles = sorted(df_incl['Цикл'].unique())
-        if len(cycles) == 0:
-            st.error("Нет циклов в данных наклономера.")
-            st.stop()
+        with tab1:
+            st.subheader("Данные наклономера")
+            st.dataframe(df_incl, use_container_width=True)
 
-        # --- Параметры расчёта ---
-        st.sidebar.header("Параметры расчёта")
-        zero_cycle = st.sidebar.selectbox("Нулевой цикл (для вычитания начального угла)", cycles, index=0)
-        alpha0_x = st.sidebar.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
-        alpha0_y = st.sidebar.number_input("Начальный угол Y (αy0), °", value=0.0, step=0.001, format="%.3f")
-        L = st.sidebar.number_input("Высота этажа (L), м", value=3.0, step=0.1, format="%.1f")
+            cycles = sorted(df_incl['Цикл'].unique())
+            if len(cycles) == 0:
+                st.error("Нет циклов в данных наклономера.")
+                st.stop()
 
-        # Расчёт абсолютных углов и смещений
-        zero_data = df_incl[df_incl['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'})
-        df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
-        df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
-        df_incl['αy_abs'] = df_incl['αy'] - df_incl['αy0_inc'] + alpha0_y
-        df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
-        df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
+            st.subheader("⚙️ Параметры расчёта")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                zero_cycle = st.selectbox("Нулевой цикл", cycles, index=0)
+            with col2:
+                alpha0_x = st.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
+            with col3:
+                alpha0_y = st.number_input("Начальный угол Y (αy0), °", value=0.0, step=0.001, format="%.3f")
+            with col4:
+                L = st.number_input("Высота этажа (L), м", value=3.0, step=0.1, format="%.1f")
 
-        # ------------------------------------------------------------
-        # 2. Парсинг осадок (если есть подходящие листы)
-        # ------------------------------------------------------------
-        df_sett_angles = None
-        sett_sheets = [s for s in all_sheets if 'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
-        if sett_sheets:
-            st.sidebar.subheader("Данные осадок")
-            selected_sett_sheet = st.sidebar.selectbox("Выберите лист с осадками", sett_sheets)
-            corner_marks_str = st.sidebar.text_input(
-                "Номера угловых марок (через запятую, в порядке: нижний левый, нижний правый, верхний левый, верхний правый)",
-                "1,5,9,13"
-            )
-            try:
-                corner_marks = [x.strip() for x in corner_marks_str.split(',') if x.strip()]
-                corner_marks_parsed = []
-                for m in corner_marks:
+            # Расчёт абсолютных углов и смещений (выполняется сразу)
+            zero_data = df_incl[df_incl['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'})
+            df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
+            df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
+            df_incl['αy_abs'] = df_incl['αy'] - df_incl['αy0_inc'] + alpha0_y
+            df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
+            df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
+
+            # Блок осадок (если есть)
+            sett_sheets = [s for s in all_sheets if 'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
+            if sett_sheets:
+                st.subheader("📐 Данные осадок")
+                with st.expander("Настройки осадок", expanded=False):
+                    selected_sett_sheet = st.selectbox("Выберите лист с осадками", sett_sheets, key="sett_sheet")
+                    corner_marks_str = st.text_input(
+                        "Номера угловых марок (через запятую, в порядке: нижний левый, нижний правый, верхний левый, верхний правый)",
+                        "1,5,9,13"
+                    )
                     try:
-                        corner_marks_parsed.append(int(m))
-                    except ValueError:
-                        corner_marks_parsed.append(m)
-                corner_marks = corner_marks_parsed
-                if len(corner_marks) != 4:
-                    st.sidebar.warning("Введите ровно 4 номера марок.")
-            except:
-                corner_marks = []
-            L_sett = st.sidebar.number_input("Длина фундамента L, м", value=70.0, step=1.0)
-            B_sett = st.sidebar.number_input("Ширина фундамента B, м", value=18.0, step=1.0)
+                        corner_marks = [x.strip() for x in corner_marks_str.split(',') if x.strip()]
+                        corner_marks_parsed = []
+                        for m in corner_marks:
+                            try:
+                                corner_marks_parsed.append(int(m))
+                            except ValueError:
+                                corner_marks_parsed.append(m)
+                        corner_marks = corner_marks_parsed
+                        if len(corner_marks) != 4:
+                            st.warning("Введите ровно 4 номера марок.")
+                    except:
+                        corner_marks = []
+                    L_sett = st.number_input("Длина фундамента L, м", value=70.0, step=1.0)
+                    B_sett = st.number_input("Ширина фундамента B, м", value=18.0, step=1.0)
 
-            if st.sidebar.button("Рассчитать углы по осадкам"):
-                if len(corner_marks) == 4:
-                    df_sett_angles = parse_settlement_data(file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett)
-                    if df_sett_angles is not None:
-                        st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
-                        st.dataframe(df_sett_angles, use_container_width=True)
-                else:
-                    st.sidebar.error("Укажите 4 угловые марки.")
-
-        # ------------------------------------------------------------
-        # 3. Графики (без изменений)
-        # ------------------------------------------------------------
-        st.subheader("📈 Изменение абсолютных углов наклона по циклам (наклономер)")
-        fig = go.Figure()
-        for floor in sorted(df_incl['Этаж'].unique()):
-            floor_df = df_incl[df_incl['Этаж'] == floor].sort_values('Цикл')
-            fig.add_trace(go.Scatter(
-                x=floor_df['Цикл'],
-                y=floor_df['αx_abs'],
-                mode='lines+markers',
-                name=f'Этаж {floor} αx_abs'
-            ))
-            fig.add_trace(go.Scatter(
-                x=floor_df['Цикл'],
-                y=floor_df['αy_abs'],
-                mode='lines+markers',
-                name=f'Этаж {floor} αy_abs',
-                line=dict(dash='dot')
-            ))
-        fig.update_layout(
-            xaxis_title="Цикл",
-            yaxis_title="Абсолютный угол, °",
-            template="plotly_white",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Сравнение с осадками, если есть
-        if df_sett_angles is not None and not df_sett_angles.empty:
-            st.subheader("📊 Сравнение углов по осадкам и наклономеру")
-            merged = pd.merge(df_incl[df_incl['Этаж'] == 5], df_sett_angles, on='Цикл', how='inner')
-            if merged.empty:
-                st.warning("Циклы осадок и наклономера не совпадают по датам. Сравнение по порядку циклов.")
-                last_incl = df_incl[df_incl['Цикл'] == df_incl['Цикл'].iloc[-1]]
-                last_sett = df_sett_angles[df_sett_angles['Цикл'] == df_sett_angles['Цикл'].iloc[-1]]
-                if not last_incl.empty and not last_sett.empty:
-                    st.write("Последний цикл наклономера:")
-                    st.dataframe(last_incl[['Этаж', 'αx_abs', 'αy_abs']])
-                    st.write("Последний цикл осадок:")
-                    st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']])
+                    if st.button("Рассчитать углы по осадкам"):
+                        if len(corner_marks) == 4:
+                            df_sett_angles = parse_settlement_data(file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett)
+                            if df_sett_angles is not None:
+                                st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
+                                st.dataframe(df_sett_angles, use_container_width=True)
+                                st.session_state.df_sett_angles = df_sett_angles
+                            else:
+                                st.error("Не удалось рассчитать углы.")
+                        else:
+                            st.error("Укажите 4 угловые марки.")
+                # Если уже есть рассчитанные данные в session_state, показываем их
+                if 'df_sett_angles' in st.session_state:
+                    st.dataframe(st.session_state.df_sett_angles, use_container_width=True)
             else:
-                fig2 = go.Figure()
-                fig2.add_trace(go.Scatter(
-                    x=merged['Цикл'],
-                    y=merged['αx_abs'],
-                    mode='lines+markers',
-                    name='αx (наклономер)'
-                ))
-                fig2.add_trace(go.Scatter(
-                    x=merged['Цикл'],
-                    y=merged['a_град'],
-                    mode='lines+markers',
-                    name='a (осадки)',
-                    line=dict(dash='dash')
-                ))
-                fig2.add_trace(go.Scatter(
-                    x=merged['Цикл'],
-                    y=merged['αy_abs'],
-                    mode='lines+markers',
-                    name='αy (наклономер)'
-                ))
-                fig2.add_trace(go.Scatter(
-                    x=merged['Цикл'],
-                    y=merged['b_град'],
-                    mode='lines+markers',
-                    name='b (осадки)',
-                    line=dict(dash='dash')
-                ))
-                fig2.update_layout(
-                    xaxis_title="Цикл",
-                    yaxis_title="Угол, °",
-                    template="plotly_white",
-                    hovermode="x unified"
-                )
-                st.plotly_chart(fig2, use_container_width=True)
+                st.info("Листов с осадками не найдено.")
+                # Убедимся, что в session_state нет лишних данных
+                if 'df_sett_angles' in st.session_state:
+                    del st.session_state.df_sett_angles
 
-        # Профиль смещений (последний цикл)
-        last_cycle = df_incl['Цикл'].iloc[-1]
-        profile = df_incl[df_incl['Цикл'] == last_cycle].sort_values('Этаж')
-        if not profile.empty:
-            st.subheader(f"📊 Профиль смещений на цикле {last_cycle}")
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(
-                x=profile['Смещение X'],
-                y=profile['Этаж'],
-                mode='lines+markers',
-                name='Смещение X',
-                marker=dict(size=10)
-            ))
-            fig3.add_trace(go.Scatter(
-                x=profile['Смещение Y'],
-                y=profile['Этаж'],
-                mode='lines+markers',
-                name='Смещение Y',
-                marker=dict(size=10, symbol='square')
-            ))
-            fig3.update_layout(
-                xaxis_title="Смещение, м",
-                yaxis_title="Этаж",
+        with tab2:
+            st.subheader("📈 Изменение абсолютных углов наклона по циклам (наклономер)")
+            fig = go.Figure()
+            for floor in sorted(df_incl['Этаж'].unique()):
+                floor_df = df_incl[df_incl['Этаж'] == floor].sort_values('Цикл')
+                fig.add_trace(go.Scatter(
+                    x=floor_df['Цикл'],
+                    y=floor_df['αx_abs'],
+                    mode='lines+markers',
+                    name=f'Этаж {floor} αx_abs'
+                ))
+                fig.add_trace(go.Scatter(
+                    x=floor_df['Цикл'],
+                    y=floor_df['αy_abs'],
+                    mode='lines+markers',
+                    name=f'Этаж {floor} αy_abs',
+                    line=dict(dash='dot')
+                ))
+            fig.update_layout(
+                xaxis_title="Цикл",
+                yaxis_title="Абсолютный угол, °",
                 template="plotly_white",
-                yaxis=dict(autorange="reversed"),
-                hovermode="y unified"
+                hovermode="x unified"
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
-        # ------------------------------------------------------------
-        # 4. Скачивание отчётов
-        # ------------------------------------------------------------
-        st.subheader("📥 Скачать отчёт")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            excel_data = generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L)
-            st.download_button(
-                label="📊 Excel",
-                data=excel_data,
-                file_name=f"inclinometer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        with col2:
-            pdf_data = generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L)
-            st.download_button(
-                label="📄 PDF",
-                data=pdf_data.getvalue(),
-                file_name=f"inclinometer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                mime="application/pdf"
-            )
-        with col3:
-            word_data = generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L)
-            st.download_button(
-                label="📝 Word",
-                data=word_data.getvalue(),
-                file_name=f"inclinometer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
+            # Сравнение с осадками, если есть
+            df_sett_angles = st.session_state.get('df_sett_angles', None)
+            if df_sett_angles is not None and not df_sett_angles.empty:
+                st.subheader("📊 Сравнение углов по осадкам и наклономеру")
+                merged = pd.merge(df_incl[df_incl['Этаж'] == 5], df_sett_angles, on='Цикл', how='inner')
+                if merged.empty:
+                    st.warning("Циклы осадок и наклономера не совпадают по датам. Сравнение по порядку циклов.")
+                    last_incl = df_incl[df_incl['Цикл'] == df_incl['Цикл'].iloc[-1]]
+                    last_sett = df_sett_angles[df_sett_angles['Цикл'] == df_sett_angles['Цикл'].iloc[-1]]
+                    if not last_incl.empty and not last_sett.empty:
+                        st.write("Последний цикл наклономера:")
+                        st.dataframe(last_incl[['Этаж', 'αx_abs', 'αy_abs']])
+                        st.write("Последний цикл осадок:")
+                        st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']])
+                else:
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл'],
+                        y=merged['αx_abs'],
+                        mode='lines+markers',
+                        name='αx (наклономер)'
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл'],
+                        y=merged['a_град'],
+                        mode='lines+markers',
+                        name='a (осадки)',
+                        line=dict(dash='dash')
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл'],
+                        y=merged['αy_abs'],
+                        mode='lines+markers',
+                        name='αy (наклономер)'
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=merged['Цикл'],
+                        y=merged['b_град'],
+                        mode='lines+markers',
+                        name='b (осадки)',
+                        line=dict(dash='dash')
+                    ))
+                    fig2.update_layout(
+                        xaxis_title="Цикл",
+                        yaxis_title="Угол, °",
+                        template="plotly_white",
+                        hovermode="x unified"
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+
+            # Профиль смещений (последний цикл)
+            last_cycle = df_incl['Цикл'].iloc[-1]
+            profile = df_incl[df_incl['Цикл'] == last_cycle].sort_values('Этаж')
+            if not profile.empty:
+                st.subheader(f"📊 Профиль смещений на цикле {last_cycle}")
+                fig3 = go.Figure()
+                fig3.add_trace(go.Scatter(
+                    x=profile['Смещение X'],
+                    y=profile['Этаж'],
+                    mode='lines+markers',
+                    name='Смещение X',
+                    marker=dict(size=10)
+                ))
+                fig3.add_trace(go.Scatter(
+                    x=profile['Смещение Y'],
+                    y=profile['Этаж'],
+                    mode='lines+markers',
+                    name='Смещение Y',
+                    marker=dict(size=10, symbol='square')
+                ))
+                fig3.update_layout(
+                    xaxis_title="Смещение, м",
+                    yaxis_title="Этаж",
+                    template="plotly_white",
+                    yaxis=dict(autorange="reversed"),
+                    hovermode="y unified"
+                )
+                st.plotly_chart(fig3, use_container_width=True)
+
+        with tab3:
+            st.subheader("📥 Скачать отчёт")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                excel_data = generate_excel_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L)
+                st.download_button(
+                    label="📊 Excel",
+                    data=excel_data,
+                    file_name=f"inclinometer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col2:
+                pdf_data = generate_pdf_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L)
+                st.download_button(
+                    label="📄 PDF",
+                    data=pdf_data.getvalue(),
+                    file_name=f"inclinometer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                    mime="application/pdf"
+                )
+            with col3:
+                word_data = generate_word_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L)
+                st.download_button(
+                    label="📝 Word",
+                    data=word_data.getvalue(),
+                    file_name=f"inclinometer_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
 
     except Exception as e:
         st.error(f"Ошибка обработки: {e}")
