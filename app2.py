@@ -22,7 +22,7 @@ st.title("📐 Анализ данных накладного инклиноме
 st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики, профили и сформирует отчёты.")
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (с поддержкой ручного диапазона строк)
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА
 # ------------------------------------------------------------
 def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=None, search_end=None):
     """
@@ -44,7 +44,7 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
     total_rows = len(df_raw)
 
-    # --- 1. Находим строку с заголовками циклов ---
+    # 1. Находим строку с заголовками циклов
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
@@ -73,63 +73,73 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
                 cycle_labels.append("")
         cycle_labels = [c for c in cycle_labels if c]
 
-    # --- 2. Определяем строки с этажами ---
+    # 2. Определяем строки с этажами
     if manual_floor_rows is not None:
-        floor_rows = manual_floor_rows
-    else:
-        # Если задан диапазон поиска, используем его
-        start_search = search_start if search_start is not None else (cycle_header_row + 1 if cycle_header_row is not None else 0)
-        end_search = search_end if search_end is not None else None
-
-        # Корректируем границы, чтобы не выходить за пределы DataFrame
-        if start_search >= total_rows:
-            st.error(f"Начальная строка {start_search} выходит за пределы данных (всего строк: {total_rows})")
+        floor_rows = {}
+        for floor, row_idx in manual_floor_rows.items():
+            if 0 <= row_idx < total_rows:
+                row = df_raw.iloc[row_idx]
+                num_count = sum(1 for cell in row if pd.notna(cell) and isinstance(cell, (int, float)))
+                if num_count >= 6:
+                    floor_rows[floor] = row_idx
+                else:
+                    st.warning(f"Строка {row_idx} содержит мало числовых данных, возможно, это не данные этажа {floor}.")
+            else:
+                st.warning(f"Строка {row_idx} выходит за пределы листа (всего строк: {total_rows}).")
+        if len(floor_rows) < 2:
+            st.error("Недостаточно валидных строк с этажами. Проверьте введённые индексы.")
             return None
-        if end_search is not None and end_search > total_rows:
+    else:
+        # Автоматический поиск
+        # Если не заданы границы, определяем их
+        if search_start is None:
+            search_start = cycle_header_row + 1 if cycle_header_row is not None else 0
+        if search_end is None:
+            # Ищем до появления "Таблица" или до конца
             end_search = total_rows
-        if end_search is None:
-            # Если конец не задан, ищем до появления "Таблица" или до конца
-            table_row = None
-            for idx in range(start_search, total_rows):
+            for idx in range(search_start, total_rows):
                 row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
                 if 'Таблица' in row_str:
-                    table_row = idx
+                    end_search = idx
                     break
-            end_search = table_row if table_row is not None else total_rows
-        if start_search >= end_search:
-            st.error("Начальная строка должна быть меньше конечной.")
-            return None
+            search_end = end_search
+        else:
+            # Если задан конец, корректируем
+            search_end = min(search_end, total_rows)
+
+        # Корректируем начало
+        search_start = max(0, min(search_start, total_rows-1))
+        search_end = max(search_start, search_end)  # чтобы не было пустого диапазона
 
         floor_rows = {}
-        for idx in range(start_search, end_search):
+        for idx in range(search_start, search_end):
             row = df_raw.iloc[idx]
-            floor = None
+            found_floor = None
             for cell in row:
                 if pd.isna(cell):
                     continue
                 cell_str = str(cell).strip()
                 match = re.search(r'\b(5|15|27)\b', cell_str)
                 if match:
-                    floor = int(match.group(1))
+                    found_floor = int(match.group(1))
                     break
-            if floor is not None:
+            if found_floor is not None:
                 num_count = sum(1 for cell in row if pd.notna(cell) and isinstance(cell, (int, float)))
                 if num_count >= 6:
-                    floor_rows[floor] = idx
+                    floor_rows[found_floor] = idx
             if len(floor_rows) == 3:
                 break
 
         if len(floor_rows) < 2:
             st.warning("Не удалось автоматически найти строки с этажами (5, 15).")
-            st.write("Первые 30 строк листа (верхняя часть):")
+            st.write("Первые 30 строк листа:")
             st.dataframe(df_raw.head(30))
             return None
 
+    # 3. Сортируем и собираем данные
     floor_rows_sorted = [floor_rows[f] for f in sorted(floor_rows.keys())]
 
-    # --- 3. Если не нашли заголовки, создаём метки циклов ---
     max_pairs = 0
-    floor_pairs = {}
     for floor_idx in floor_rows_sorted:
         values = []
         for cell in df_raw.iloc[floor_idx, 1:]:
@@ -140,7 +150,6 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
             pairs = [(values[i], values[i+1]) for i in range(0, len(values), 2)]
         else:
             pairs = [(values[i], values[i+1]) for i in range(0, len(values)-1, 2)]
-        floor_pairs[floor_rows_sorted.index(floor_idx)] = pairs
         if len(pairs) > max_pairs:
             max_pairs = len(pairs)
 
@@ -150,7 +159,6 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
         for i in range(len(cycle_labels), max_pairs):
             cycle_labels.append(f"Цикл {i+1}")
 
-    # --- 4. Собираем данные ---
     data = []
     for floor_idx in floor_rows_sorted:
         floor_val = None
@@ -185,7 +193,7 @@ def parse_inclinometer_data(file_bytes, manual_floor_rows=None, search_start=Non
                 })
 
     if not data:
-        st.error("Не удалось извлечь данные наклономера. Проверьте структуру листа.")
+        st.error("Не удалось извлечь данные наклономера.")
         return None
 
     df = pd.DataFrame(data)
@@ -404,8 +412,8 @@ if uploaded_file is not None:
         st.sidebar.header("Параметры поиска наклономера")
         use_manual_range = st.sidebar.checkbox("Использовать ручной диапазон строк для поиска этажей", value=False)
         if use_manual_range:
-            search_start = st.sidebar.number_input("Начальная строка (индекс)", min_value=0, step=1, value=0)
-            search_end = st.sidebar.number_input("Конечная строка (индекс)", min_value=0, step=1, value=30)
+            search_start = st.sidebar.number_input("Начальная строка (индекс)", min_value=0, step=1, value=7)
+            search_end = st.sidebar.number_input("Конечная строка (индекс)", min_value=0, step=1, value=13)
         else:
             search_start = None
             search_end = None
