@@ -10,7 +10,6 @@ from typing import Optional, Tuple, List, Dict, Any
 # ------------------------------------------------------------
 # КОНСТАНТЫ
 # ------------------------------------------------------------
-FLOORS_NEEDED = [5, 15, 27]
 TABLE_INCLINOMETER = "Таблица 8"
 TABLE_SETTLEMENT_END = "Таблица 9"
 DEFAULT_BUILDING_LENGTH = 70.46
@@ -40,6 +39,8 @@ if 'vertical_scale' not in st.session_state:
     st.session_state.vertical_scale = DEFAULT_VERTICAL_SCALE
 if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
+if 'selected_floors' not in st.session_state:
+    st.session_state.selected_floors = []
 
 # ------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (кэшируемые)
@@ -87,9 +88,9 @@ def parse_cycle_labels(cycle_names: List[str]) -> List[str]:
     return labels
 
 @st.cache_data
-def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[int, int]:
+def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int, floors_to_find: List[int]) -> Dict[int, int]:
     """
-    Ищет строки с номерами этажей 5, 15, 27 в первых двух столбцах.
+    Ищет строки с указанными номерами этажей в первых двух столбцах.
     Возвращает словарь {этаж: индекс_строки}.
     """
     floor_rows = {}
@@ -101,16 +102,15 @@ def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[
                 cell = row.iloc[col] if hasattr(row, 'iloc') else row[col]
                 if pd.notna(cell):
                     cell_str = str(cell).strip()
-                    match = re.search(r'\b(5|15|27)\b', cell_str)
+                    match = re.search(r'\b(\d+)\b', cell_str)
                     if match:
                         found_floor = int(match.group(1))
-                        break
+                        if found_floor in floors_to_find:
+                            break
         if found_floor is not None:
             num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
             if num_count >= 6:
                 floor_rows[found_floor] = idx
-        if len(floor_rows) == 3:
-            break
     return floor_rows
 
 @st.cache_data
@@ -129,7 +129,7 @@ def extract_angle_pairs(df_raw: pd.DataFrame, floor_idx: int, total_cols: int) -
     return pairs
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (возвращает все этажи)
 # ------------------------------------------------------------
 @st.cache_data
 def parse_inclinometer_data(
@@ -208,9 +208,42 @@ def parse_inclinometer_data(
         start_search = max(0, min(start_search, total_rows - 1))
         end_search = max(start_search, min(end_search, total_rows))
 
-        floor_rows = find_floor_rows(df_raw, start_search, end_search)
+        # Ищем все возможные этажи (числа в первых двух колонках)
+        possible_floors = set()
+        for idx in range(start_search, end_search):
+            row = df_raw.iloc[idx]
+            for col in [0, 1]:
+                if col < len(row):
+                    cell = row.iloc[col] if hasattr(row, 'iloc') else row[col]
+                    if pd.notna(cell):
+                        cell_str = str(cell).strip()
+                        match = re.search(r'\b(\d+)\b', cell_str)
+                        if match:
+                            floor_num = int(match.group(1))
+                            if 1 <= floor_num <= 100:
+                                possible_floors.add(floor_num)
+        possible_floors = sorted(possible_floors)
+        floor_rows = {}
+        for floor in possible_floors:
+            for idx in range(start_search, end_search):
+                row = df_raw.iloc[idx]
+                found = False
+                for col in [0, 1]:
+                    if col < len(row):
+                        cell = row.iloc[col] if hasattr(row, 'iloc') else row[col]
+                        if pd.notna(cell):
+                            cell_str = str(cell).strip()
+                            if str(floor) in cell_str:
+                                num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
+                                if num_count >= 6:
+                                    floor_rows[floor] = idx
+                                    found = True
+                                    break
+                if found:
+                    break
+
         if len(floor_rows) < 2:
-            st.warning("Не удалось автоматически найти строки с этажами (5, 15).")
+            st.warning("Не удалось автоматически найти строки с этажами. Попробуйте ручной ввод.")
             st.write("Первые 30 строк листа (первые 10 колонок):")
             st.dataframe(df_raw.iloc[:30, :10])
             return None
@@ -242,7 +275,7 @@ def parse_inclinometer_data(
                 cell = df_raw.iloc[floor_idx, col]
                 if pd.notna(cell):
                     cell_str = str(cell).strip()
-                    match = re.search(r'\b(5|15|27)\b', cell_str)
+                    match = re.search(r'\b(\d+)\b', cell_str)
                     if match:
                         floor_val = int(match.group(1))
                         break
@@ -483,20 +516,23 @@ def parse_settlement_data(
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
-# РАСЧЁТ ДЕФОРМИРОВАННОЙ ОСИ
+# РАСЧЁТ ДЕФОРМИРОВАННОЙ ОСИ (использует выбранные этажи)
 # ------------------------------------------------------------
 def calculate_displacement_points(
     df_incl: pd.DataFrame,
     selected_cycle: str,
     L: float,
-    vertical_scale: float = 1.0
+    vertical_scale: float = 1.0,
+    floors: List[int] = None
 ) -> Tuple[List[Tuple[float, float, float]], float, float, float, float]:
     """
-    Вычисляет точки деформированной оси по данным наклономеров.
+    Вычисляет точки деформированной оси по данным наклономеров для указанных этажей.
     Возвращает: список точек (x, y, z), координаты верхней точки и максимальную высоту.
     """
+    if floors is None:
+        floors = sorted(df_incl['Этаж'].unique())
     df_cycle = df_incl[df_incl['Цикл'] == selected_cycle]
-    df_floors = df_cycle[df_cycle['Этаж'].isin(FLOORS_NEEDED)].sort_values('Этаж')
+    df_floors = df_cycle[df_cycle['Этаж'].isin(floors)].sort_values('Этаж')
 
     points = [(0, 0, 0)]
     cum_x, cum_y = 0.0, 0.0
@@ -515,11 +551,11 @@ def calculate_displacement_points(
         prev_floor = floor
 
     top_x, top_y, top_z = points[-1]
-    max_z = 27 * L * vertical_scale
+    max_z = max([p[2] for p in points]) if points else 0
     return points, top_x, top_y, top_z, max_z
 
 # ------------------------------------------------------------
-# ПОСТРОЕНИЕ 3D-МОДЕЛИ
+# ПОСТРОЕНИЕ 3D-МОДЕЛИ (использует выбранные этажи)
 # ------------------------------------------------------------
 def plot_building_3d(
     df_incl: pd.DataFrame,
@@ -528,25 +564,28 @@ def plot_building_3d(
     building_length: float,
     building_width: float,
     vertical_scale: float = 1.0,
-    df_sett_angles: Optional[pd.DataFrame] = None
+    df_sett_angles: Optional[pd.DataFrame] = None,
+    floors: List[int] = None
 ) -> Optional[go.Figure]:
     """
     Строит 3D-модель здания с деформациями, наклономерами и креном.
     Возвращает объект Figure или None, если данных недостаточно.
     """
+    if floors is None:
+        floors = sorted(df_incl['Этаж'].unique())
     points, top_x, top_y, top_z, max_z = calculate_displacement_points(
-        df_incl, selected_cycle, L, vertical_scale
+        df_incl, selected_cycle, L, vertical_scale, floors
     )
 
     if len(points) < 2:
         return None
 
     df_cycle = df_incl[df_incl['Цикл'] == selected_cycle]
-    df_floors = df_cycle[df_cycle['Этаж'].isin(FLOORS_NEEDED)].sort_values('Этаж')
+    df_floors = df_cycle[df_cycle['Этаж'].isin(floors)].sort_values('Этаж')
 
     fig = go.Figure()
 
-    # --- 1. Исходная вертикаль ---
+    # --- 1. Исходная вертикаль (до максимального этажа) ---
     fig.add_trace(go.Scatter3d(
         x=[0, 0], y=[0, 0], z=[0, max_z],
         mode='lines',
@@ -601,7 +640,7 @@ def plot_building_3d(
             name=f'Наклономер {floor}'
         ))
 
-    # --- 5. Общий крен ---
+    # --- 5. Общий крен (от фундамента до верхней точки) ---
     fig.add_trace(go.Scatter3d(
         x=[0, top_x], y=[0, top_y], z=[0, top_z],
         mode='lines+markers',
@@ -737,7 +776,7 @@ if uploaded_file is not None:
 
         if df_incl is None:
             st.subheader("🔧 Ручной ввод строк с этажами")
-            st.write("Введите номера строк (индексы, начиная с 0), в которых расположены данные для этажей 5, 15, 27.")
+            st.write("Введите номера строк (индексы, начиная с 0), в которых расположены данные для этажей.")
             col1, col2, col3 = st.columns(3)
             with col1:
                 row_5 = st.number_input("Строка для этажа 5", min_value=0, step=1, value=0)
@@ -770,6 +809,17 @@ if uploaded_file is not None:
 
         if df_incl is None:
             st.stop()
+
+        # --- Боковая панель: выбор этажей ---
+        all_available_floors = sorted(df_incl['Этаж'].unique())
+        default_floors = all_available_floors.copy()
+        selected_floors = st.sidebar.multiselect(
+            "Этажи с наклономерами (выберите для построения модели)",
+            options=all_available_floors,
+            default=default_floors,
+            help="Выберите этажи, по которым будут строиться деформации. Если данных для этажа нет, он будет пропущен."
+        )
+        st.session_state.selected_floors = selected_floors
 
         # --- Боковая панель: размеры здания ---
         st.sidebar.subheader("Размеры здания для 3D-модели")
@@ -807,10 +857,8 @@ if uploaded_file is not None:
         cycle_keys = list(cycle_display_map.keys())
 
         with tab1:
-            st.subheader("Данные наклономера")
-            df_display = df_incl.copy()
-            df_display['Цикл'] = df_display['Цикл'].map(cycle_display_map)
-            st.dataframe(df_display, use_container_width=True)
+            # Таблица с данными наклономера УДАЛЕНА
+            # Оставляем только параметры и блок осадок
 
             if len(cycle_keys) == 0:
                 st.error("Нет циклов в данных наклономера.")
@@ -832,7 +880,7 @@ if uploaded_file is not None:
             with col4:
                 L = st.number_input("Высота этажа (L), м", value=3.0, step=0.1, format="%.1f")
 
-            # Расчёт абсолютных углов и смещений
+            # Расчёт абсолютных углов и смещений (для всех этажей)
             zero_data = df_incl[df_incl['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(
                 columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'}
             )
@@ -951,7 +999,7 @@ if uploaded_file is not None:
                         else:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
-                # Отображение таблицы осадок с форматированием через column_config
+                # Отображение таблицы осадок
                 if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
                     df_angles = st.session_state.res_df_sett_angles.copy()
                     st.subheader("Таблица углов крена по осадкам")
@@ -974,7 +1022,7 @@ if uploaded_file is not None:
             **ℹ️ Модель показывает реальную деформацию здания**:
             - **Серая пунктирная линия** – исходная вертикаль.
             - **Красная линия** – деформированная ось (накопленные смещения).
-            - **Зелёные векторы** – смещения на этажах 5, 15, 27.
+            - **Зелёные векторы** – смещения на выбранных этажах.
             - **Синие квадраты** – места установки наклономеров с углами.
             - **Оранжевая стрелка** – общий крен здания (от фундамента до верха).
             - **Фиолетовая стрелка** (если есть) – крен из данных осадок.
@@ -1006,6 +1054,7 @@ if uploaded_file is not None:
                 building_width = st.session_state.get("building_width", DEFAULT_BUILDING_WIDTH)
                 vertical_scale = st.session_state.get("vertical_scale", DEFAULT_VERTICAL_SCALE)
                 df_sett_angles = st.session_state.get("res_df_sett_angles", None)
+                floors = st.session_state.get("selected_floors", [])
 
                 fig_building = plot_building_3d(
                     df_incl,
@@ -1014,66 +1063,147 @@ if uploaded_file is not None:
                     building_length,
                     building_width,
                     vertical_scale,
-                    df_sett_angles
+                    df_sett_angles,
+                    floors
                 )
                 if fig_building:
                     st.plotly_chart(fig_building, use_container_width=True)
                 else:
-                    st.warning("Для выбранного цикла нет данных на этажах 5, 15 или 27.")
+                    st.warning("Для выбранного цикла нет данных на выбранных этажах. Попробуйте изменить выбор этажей или цикл.")
 
             # ---------- Раздел с формулами ----------
             with st.expander("📐 Как строится модель (формулы и пояснения)", expanded=False):
                 st.markdown(r"""
-                **Построение 3D-модели деформаций здания** основано на данных накладного инклинометра, установленного на этажах 5, 15 и 27.
+                **Построение 3D-модели деформаций здания** основано на данных накладного инклинометра, установленного на выбранных этажах (вы задаёте их в боковой панели).
+
+                ---
 
                 ### 1. Исходные данные
-                - Для каждого цикла измерений известны углы наклона по осям X и Y:  
-                  \(\alpha_{x}^{(i)}\) и \(\alpha_{y}^{(i)}\) для i-го этажа (i = 5, 15, 27).
-                - Эти углы – это **прирост** относительно нулевого цикла, скорректированный на начальный угол (\( \alpha_{0x}, \alpha_{0y} \)), задаваемый пользователем.
+
+                Для каждого цикла измерений и для каждого выбранного этажа \(i\) известны:
+
+                * \(\alpha_{x}^{(i)}\) – угол наклона по оси **X** (градусы);
+                * \(\alpha_{y}^{(i)}\) – угол наклона по оси **Y** (градусы).
+
+                Эти углы – это **прирост** относительно нулевого цикла, скорректированный на начальный угол (\( \alpha_{0x}, \alpha_{0y} \)), который задаёт пользователь.  
+                Таким образом, **абсолютные** углы наклона для расчётов:
+
+                \[
+                \alpha_{x,\,abs}^{(i)} = \alpha_{x}^{(i)} - \alpha_{x,\,0}^{(i)} + \alpha_{0x}
+                \]
+                \[
+                \alpha_{y,\,abs}^{(i)} = \alpha_{y}^{(i)} - \alpha_{y,\,0}^{(i)} + \alpha_{0y}
+                \]
+
+                где \(\alpha_{x,\,0}^{(i)}\), \(\alpha_{y,\,0}^{(i)}\) – значения углов в нулевом цикле для этажа \(i\).
+
+                ---
 
                 ### 2. Накопление смещений
-                Смещение на каждом этаже вычисляется как сумма приращений по высоте:
+
+                Смещение на каждом этаже вычисляется как **сумма приращений** по высоте от фундамента (0-й этаж) до текущего этажа.
+
+                Для участка между двумя соседними выбранными этажами \(k-1\) и \(k\) (высота участка \(L_k = (\text{этаж}_k - \text{этаж}_{k-1}) \cdot L\), где \(L\) – высота одного этажа) угол наклона считается **постоянным** (линейная интерполяция).
+
+                Тогда приращения смещения на этом участке:
 
                 \[
-                M_x^{(h)} = \sum_{k} L_k \cdot \sin\left(\alpha_{x}^{(k)}\right)
+                \Delta M_x^{(k)} = L_k \cdot \sin\left(\alpha_{x,\,abs}^{(k)}\right)
                 \]
+                \[
+                \Delta M_y^{(k)} = L_k \cdot \sin\left(\alpha_{y,\,abs}^{(k)}\right)
+                \]
+
+                Накопленное смещение на этаже \(n\):
 
                 \[
-                M_y^{(h)} = \sum_{k} L_k \cdot \sin\left(\alpha_{y}^{(k)}\right)
+                M_x^{(n)} = \sum_{k=1}^{n} \Delta M_x^{(k)}
+                \]
+                \[
+                M_y^{(n)} = \sum_{k=1}^{n} \Delta M_y^{(k)}
                 \]
 
-                где:
-                - \( L_k \) – высота участка между соседними измеренными этажами (определяется по номерам этажей и параметру \( L \) – высота одного этажа);
-                - суммирование ведётся от фундамента (0-й этаж) до текущего этажа.
+                где суммирование ведётся по всем выбранным этажам от фундамента до \(n\).
 
-                Для участков между этажами 0–5, 5–15, 15–27 используется линейная интерполяция угла (считаем его постоянным на каждом участке).
+                > **Примечание:** углы \(\alpha_{x,\,abs}\) и \(\alpha_{y,\,abs}\) перед взятием синуса переводятся из градусов в радианы:  
+                > \(\alpha_{\text{рад}} = \alpha_{\text{град}} \cdot \frac{\pi}{180}\).
+
+                ---
 
                 ### 3. Построение деформированной оси
-                Точки деформированной оси – это координаты \((M_x, M_y, H)\) для этажей 5, 15 и 27, где \( H = \text{номер этажа} \times L \).  
-                Дополнительно добавляется точка фундамента (0,0,0).  
-                Красная линия соединяет эти точки – это и есть **деформированная ось**.
 
-                ### 4. Общий крен здания
-                Вектор от фундамента до верхней точки (этаж 27) характеризует общий крен.  
-                Угол крена вычисляется как:
+                Для каждого выбранного этажа \(n\) вычисляется точка в трёхмерном пространстве:
 
                 \[
-                \theta = \arctan\left(\frac{\sqrt{M_x^{27} + M_y^{27}}}{H_{27}}\right)
+                \text{Точка}_n = \bigl( M_x^{(n)},\; M_y^{(n)},\; H_n \bigr)
                 \]
 
-                где \( H_{27} = 27 \cdot L \) – высота здания.
+                где \(H_n = \text{этаж}_n \cdot L\) – высота этажа над фундаментом.
 
-                ### 5. Векторы смещений
-                На каждом этаже отображается зелёный вектор от вертикальной оси (X=0, Y=0) до точки деформированной оси. Это наглядно показывает горизонтальное смещение каждого этажа.
+                Дополнительно добавляется точка фундамента: \((0,\;0,\;0)\).
+
+                **Красная линия**, соединяющая эти точки в порядке возрастания этажей, называется **деформированной осью** здания.
+
+                ---
+
+                ### 4. Общий крен здания
+
+                Вектор от фундамента до самой верхней выбранной точки (максимальный этаж \(N\)) характеризует **общий крен** здания.
+
+                Горизонтальное смещение верхней точки:
+
+                \[
+                M_{\text{top}} = \sqrt{ \bigl(M_x^{(N)}\bigr)^2 + \bigl(M_y^{(N)}\bigr)^2 }
+                \]
+
+                Высота верхней точки:
+
+                \[
+                H_{\text{top}} = \text{этаж}_N \cdot L
+                \]
+
+                Угол крена (в градусах):
+
+                \[
+                \theta = \arctan\!\left( \frac{M_{\text{top}}}{H_{\text{top}}} \right) \cdot \frac{180}{\pi}
+                \]
+
+                **Оранжевая стрелка** на графике показывает направление и величину этого вектора.
+
+                ---
+
+                ### 5. Векторы смещений на этажах
+
+                Для каждого выбранного этажа отображается **зелёный вектор** – от вертикальной оси \((0,0,H_n)\) до точки деформированной оси \((M_x^{(n)}, M_y^{(n)}, H_n)\).  
+                Это наглядно демонстрирует горизонтальное смещение каждого этажа относительно исходного положения.
+
+                ---
 
                 ### 6. Каркас здания
-                Чёрный каркас строится на основе заданных пользователем размеров в плане (длина \( X \) и ширина \( Y \)).  
-                Верхняя часть каркаса смещается пропорционально смещению верхней точки деформированной оси, что создаёт иллюзию наклона всего объёма здания.
+
+                **Чёрный каркас** строится на основе размеров здания в плане (длина \(X\) и ширина \(Y\), задаются пользователем).  
+                Вертикальные рёбра каркаса наклоняются так, чтобы верхняя их часть совпадала со смещением верхней точки деформированной оси. Это создаёт иллюзию наклона всего объёма здания.
+
+                ---
 
                 ### 7. Крен по данным осадок (опционально)
-                Если загружены и рассчитаны данные осадок фундамента, на уровне земли отображается фиолетовый вектор, показывающий направление и величину крена, вычисленного по осадкам угловых марок.
 
-                **Примечание:** все расчёты выполняются в метрах, углы переводятся в радианы через `np.radians()`.
+                Если загружены и рассчитаны данные осадок фундамента, на уровне земли (\(z=0\)) отображается **фиолетовый вектор**.  
+                Его направление и длина соответствуют углам крена, вычисленным по осадкам угловых марок:
+
+                \[
+                a = \frac{(s_2 - s_1) + (s_4 - s_3)}{2L_f}, \quad
+                b = \frac{(s_3 - s_1) + (s_4 - s_2)}{2B_f}
+                \]
+
+                где \(s_1 \dots s_4\) – осадки четырёх угловых марок, \(L_f\) и \(B_f\) – длина и ширина фундамента.
+
+                Вектор \((a, b)\) показывает наклон фундамента (в мм/м).
+
+                ---
+
+                **Все расчёты выполняются в метрах**, углы для тригонометрических функций переводятся в радианы с помощью `np.radians()`.  
+                Результат – интерактивная 3D-модель, которую можно вращать и масштабировать.
                 """)
 
         with tab3:
