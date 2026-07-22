@@ -194,7 +194,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ОСАДОК (возвращает кортеж: df_angles, marks_data, all_cycles)
+# ПАРСИНГ ОСАДОК (УЛУЧШЕННАЯ ВЕРСИЯ)
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0, zero_cycle_sett=None):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -202,13 +202,14 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-        if 'Цикл' in row_str:
+        if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
             cycle_header_row = idx
             break
     if cycle_header_row is None:
         st.error("Не найдена строка с заголовками циклов в листе осадок.")
         return None
 
+    # Определяем столбцы с осадками
     cycle_cols = {}
     all_cycles = []
     for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
@@ -225,18 +226,22 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
                 else:
                     cycle_label = cell_str
                 all_cycles.append(cycle_label)
+                # Ищем столбец с осадками (среди следующих 3-х колонок)
+                found = False
                 for offset in [1, 2, 3]:
                     if col_idx + offset < len(df_raw.columns):
                         next_cell = df_raw.iloc[cycle_header_row, col_idx + offset]
                         if pd.notna(next_cell):
-                            next_str = str(next_cell).strip()
-                            if 'осадк' in next_str.lower():
+                            next_str = str(next_cell).strip().lower()
+                            if 'осадк' in next_str:
                                 cycle_cols[cycle_label] = col_idx + offset
+                                found = True
                                 break
-                if cycle_label not in cycle_cols:
+                if not found:
+                    # Если не нашли, берём через 2 колонки (обычно структура: Отметка, Осадка, Общая осадка)
                     if col_idx + 2 < len(df_raw.columns):
                         cycle_cols[cycle_label] = col_idx + 2
-                    else:
+                    elif col_idx + 1 < len(df_raw.columns):
                         cycle_cols[cycle_label] = col_idx + 1
 
     if not cycle_cols:
@@ -258,14 +263,23 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
             sorted_cycles = sorted(all_cycles)
         zero_cycle_sett = sorted_cycles[0] if sorted_cycles else None
 
+    # Находим строки с марками (первая колонка – номер марки)
     mark_rows = []
     for idx in range(cycle_header_row + 1, len(df_raw)):
         cell_val = df_raw.iloc[idx, mark_col]
+        # Проверяем, является ли значение числом (целым или с плавающей точкой)
         if pd.notna(cell_val):
-            if isinstance(cell_val, (int, float)):
+            # Пытаемся преобразовать в число, чтобы отсеять текст
+            try:
+                float(cell_val)
                 mark_rows.append(idx)
-            elif isinstance(cell_val, str) and cell_val.strip():
-                mark_rows.append(idx)
+            except (ValueError, TypeError):
+                # Если не число, но строка – возможно, это марка типа "1.1" или "К1"
+                if isinstance(cell_val, str) and cell_val.strip():
+                    # Проверяем, что строка не содержит слов "нет", "доступа", "новая", "уничтожен" и т.п.
+                    text_lower = cell_val.strip().lower()
+                    if not any(word in text_lower for word in ['нет', 'доступ', 'нов', 'уничтож', 'примечание', 'таблица']):
+                        mark_rows.append(idx)
 
     if not mark_rows:
         st.warning(f"Не найдены строки с марками в столбце {mark_col}. Показываем превью листа.")
@@ -278,6 +292,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
         marks_abs_data[cycle_label] = {}
         for mark_idx in mark_rows:
             mark_num = df_raw.iloc[mark_idx, mark_col]
+            # Приводим к строке
             if isinstance(mark_num, (int, float)):
                 mark_str = str(int(mark_num)) if mark_num == int(mark_num) else str(mark_num)
             else:
@@ -288,13 +303,42 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
             else:
                 marks_abs_data[cycle_label][mark_str] = np.nan
 
-    # Получаем осадки в нулевом цикле
-    zero_marks = marks_abs_data.get(zero_cycle_sett, {})
-    if not zero_marks:
-        st.warning(f"Нулевой цикл {zero_cycle_sett} не найден в данных осадок. Используем первый доступный.")
+    # Отладочный вывод: показываем найденные марки
+    st.subheader("🔍 Найденные марки и осадки (последний цикл)")
+    if marks_abs_data:
+        last_cycle = max(marks_abs_data.keys())
+        df_marks_preview = pd.DataFrame({
+            'Марка': list(marks_abs_data[last_cycle].keys()),
+            'Осадка, мм': list(marks_abs_data[last_cycle].values())
+        })
+        st.dataframe(df_marks_preview, use_container_width=True)
+        st.caption(f"Показаны осадки для цикла {last_cycle}")
+
+    # Получаем осадки в нулевом цикле (только для выбранных угловых марок)
+    zero_marks = {}
+    for mark in corner_marks:
+        mark_str = str(mark)
+        if zero_cycle_sett in marks_abs_data and mark_str in marks_abs_data[zero_cycle_sett]:
+            zero_marks[mark_str] = marks_abs_data[zero_cycle_sett][mark_str]
+        else:
+            zero_marks[mark_str] = np.nan
+
+    # Если в нулевом цикле нет данных для некоторых марок, попробуем взять первый доступный цикл
+    if all(np.isnan(list(zero_marks.values()))):
+        st.warning(f"Нулевой цикл {zero_cycle_sett} не содержит данных для выбранных марок. Используем первый доступный цикл.")
         first_cycle = list(marks_abs_data.keys())[0]
-        zero_marks = marks_abs_data[first_cycle]
+        for mark in corner_marks:
+            mark_str = str(mark)
+            if mark_str in marks_abs_data[first_cycle]:
+                zero_marks[mark_str] = marks_abs_data[first_cycle][mark_str]
+            else:
+                zero_marks[mark_str] = np.nan
         zero_cycle_sett = first_cycle
+
+    # Если всё равно нет данных – ошибка
+    if all(np.isnan(list(zero_marks.values()))):
+        st.error("Не удалось найти данные для выбранных угловых марок ни в одном цикле.")
+        return None
 
     # Собираем приросты для угловых марок
     data = []
@@ -311,16 +355,13 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
                 })
 
     if not data:
-        st.error("Не удалось извлечь приросты осадок.")
+        st.error("Не удалось извлечь приросты осадок для выбранных марок.")
         return None
 
     df_sett = pd.DataFrame(data)
 
-    if len(corner_marks) != 4:
-        st.error("Должно быть ровно 4 угловые марки.")
-        return None
-
-    marks_order = list(corner_marks)
+    # Проверяем, что для каждого цикла есть все 4 марки
+    marks_order = [str(m) for m in corner_marks]
     results = []
     for cycle in df_sett['Цикл'].unique():
         cycle_data = df_sett[df_sett['Цикл'] == cycle]
@@ -343,6 +384,10 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
             'a_град': np.degrees(np.arctan(a / 1000)),
             'b_град': np.degrees(np.arctan(b / 1000))
         })
+
+    if not results:
+        st.error("Не удалось рассчитать углы. Возможно, для выбранных марок нет данных в одном из циклов.")
+        return None
 
     df_angles = pd.DataFrame(results)
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
@@ -697,7 +742,6 @@ if uploaded_file is not None:
             except Exception as e:
                 st.sidebar.error(f"Ошибка чтения файла: {e}")
         else:
-            # Если файл не загружен, создаём стандартную сетку по размерам стилобата
             if 'coord_dict' not in st.session_state:
                 L_st = 70.46
                 B_st = 18.69
@@ -749,7 +793,6 @@ if uploaded_file is not None:
             with col4:
                 L = st.number_input("Высота этажа (L), м", value=3.0, step=0.1, format="%.1f")
 
-            # Расчёт абсолютных углов и смещений
             zero_data = df_incl[df_incl['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'})
             df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
             df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
@@ -870,7 +913,6 @@ if uploaded_file is not None:
                                 st.session_state.corner_marks = corner_marks
                                 st.session_state.L_sett = L_sett
                                 st.session_state.B_sett = B_sett
-                                st.session_state.sett_sheet = selected_sett_sheet
                                 st.session_state.all_cycles_sett = all_cycles_sett
                                 st.session_state.zero_cycle_sett = zero_cycle_sett
                             else:
@@ -893,12 +935,10 @@ if uploaded_file is not None:
             - **Профиль смещений** – по этажам (данные наклономера).
             """)
 
-            # Выбор цикла для визуализации
             cycles = sorted(df_incl['Цикл'].unique())
             selected_cycle = st.selectbox("Выберите цикл для визуализации", cycles, index=len(cycles)-1, key="vis_cycle")
             cycle_label = st.session_state.get('cycle_labels', {}).get(selected_cycle, selected_cycle)
 
-            # --- 1. Схема фундамента с вектором крена (по осадкам) ---
             df_sett_angles = st.session_state.get('df_sett_angles', None)
             if df_sett_angles is not None and not df_sett_angles.empty:
                 sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle]
@@ -948,7 +988,6 @@ if uploaded_file is not None:
                     with col2:
                         st.metric("Угол b (по оси Y)", f"{b:.3f} мм/м")
 
-            # --- 2. Столбчатая диаграмма осадок ---
             marks_data = st.session_state.get('marks_data', {})
             if marks_data and selected_cycle in marks_data:
                 df_marks = pd.DataFrame({
@@ -965,7 +1004,6 @@ if uploaded_file is not None:
                 fig_bar.update_layout(template="plotly_white")
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-            # --- 3. Сравнение углов ---
             if df_sett_angles is not None and not df_sett_angles.empty:
                 kren_df = df_incl.groupby('Цикл', as_index=False)[['αx_abs', 'αy_abs']].mean()
                 merged = pd.merge(kren_df, df_sett_angles, on='Цикл', how='inner')
@@ -1008,7 +1046,6 @@ if uploaded_file is not None:
                     )
                     st.plotly_chart(fig_comp, use_container_width=True)
 
-            # --- 4. Профиль смещений по этажам ---
             st.subheader("📊 Профиль смещений по этажам (наклономер)")
             profile = df_incl[df_incl['Цикл'] == selected_cycle].sort_values('Этаж')
             if not profile.empty:
