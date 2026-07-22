@@ -79,6 +79,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         if len(cycle_labels) != len(cycle_full_names):
             cycle_labels = cycle_full_names.copy()
 
+    # Определяем диапазон строк для поиска этажей
     if manual_floor_rows is not None:
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
@@ -204,7 +205,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         for i, (ax, ay) in enumerate(pairs):
             if i < len(cycle_labels):
                 data.append({
-                    'Цикл': cycle_labels[i],
+                    'Цикл': cycle_labels[i],          # ключ-дата (или номер)
                     'Цикл_полное': cycle_full_names[i] if cycle_full_names and i < len(cycle_full_names) else cycle_labels[i],
                     'Этаж': floor_val,
                     'αx': ax,
@@ -581,32 +582,25 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         height=750,
         template="plotly_white",
         legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02
+            orientation="v",          # вертикально
+            yanchor="top",            # привязка к верхнему краю
+            y=1,                      # верхняя граница
+            xanchor="left",           # привязка к левому краю легенды
+            x=1.02                    # отступ справа от графика
         )
     )
     return fig
 
 # ------------------------------------------------------------
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: формирование списка для выпадающих списков (исправленная сортировка)
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: формирование списка для выпадающих списков
 # ------------------------------------------------------------
 def get_cycle_display_options(df_incl):
     """
     Возвращает словарь: ключ (дата/номер) -> полное название для отображения
     """
     unique = df_incl[['Цикл', 'Цикл_полное']].drop_duplicates()
-    # Пробуем преобразовать ключи к датам для сортировки
-    def try_parse(s):
-        try:
-            return pd.to_datetime(s)
-        except:
-            return s
-    # Создаем временную колонку для сортировки
-    unique['sort_key'] = unique['Цикл'].apply(try_parse)
-    unique_sorted = unique.sort_values('sort_key')
+    # Сортируем по строковому представлению (даты в формате YYYY-MM-DD сортируются корректно)
+    unique_sorted = unique.sort_values('Цикл')
     return dict(zip(unique_sorted['Цикл'], unique_sorted['Цикл_полное']))
 
 # ------------------------------------------------------------
@@ -710,10 +704,11 @@ if uploaded_file is not None:
 
         # Получаем словарь для отображения циклов
         cycle_display_map = get_cycle_display_options(df_incl)
-        cycle_keys = sorted(cycle_display_map.keys())  # список ключей (дат)
+        cycle_keys = list(cycle_display_map.keys())  # список ключей (дат)
 
         with tab1:
             st.subheader("Данные наклономера")
+            # В таблице показываем полное название цикла
             df_display = df_incl.copy()
             df_display['Цикл'] = df_display['Цикл'].map(cycle_display_map)
             st.dataframe(df_display, use_container_width=True)
@@ -725,11 +720,13 @@ if uploaded_file is not None:
             st.subheader("⚙️ Параметры расчёта")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
+                # Выпадающий список с полными названиями
                 zero_cycle_display = st.selectbox(
                     "Нулевой цикл",
                     options=[cycle_display_map[k] for k in cycle_keys],
                     index=0
                 )
+                # Находим соответствующий ключ
                 zero_cycle = [k for k, v in cycle_display_map.items() if v == zero_cycle_display][0]
             with col2:
                 alpha0_x = st.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
@@ -782,6 +779,7 @@ if uploaded_file is not None:
                     L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
                     B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
 
+                    # Получаем список циклов осадок
                     try:
                         df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
                         cycle_header_row_test = None
@@ -870,58 +868,64 @@ if uploaded_file is not None:
             """)
 
             total_cycles = len(cycle_keys)
-
-            if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
-                st.session_state.current_index = total_cycles - 1
-
-            selected_index = st.slider(
-                "Выбор цикла",
-                min_value=0,
-                max_value=total_cycles-1,
-                value=st.session_state.current_index,
-                step=1,
-                format="%d"
-            )
-            st.session_state.current_index = selected_index
-            selected_cycle_key = cycle_keys[selected_index]
-            st.caption(f"**Текущий цикл:** {cycle_display_map[selected_cycle_key]}")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("▶ Воспроизвести"):
-                    st.session_state.auto_play_active = True
-            with col2:
-                if st.button("⏹ Стоп"):
-                    st.session_state.auto_play_active = False
-
-            if st.session_state.get("auto_play_active", False):
-                speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
-                if st.session_state.current_index < total_cycles - 1:
-                    st.session_state.current_index += 1
-                    time.sleep(speed)
-                    st.rerun()
-                else:
-                    st.session_state.auto_play_active = False
-
-            selected_cycle_building = selected_cycle_key
-            building_length = st.session_state.get("building_length", 70.46)
-            building_width = st.session_state.get("building_width", 18.69)
-            vertical_scale = st.session_state.get("vertical_scale", 1.0)
-            df_sett_angles = st.session_state.get("res_df_sett_angles", None)
-
-            fig_building = plot_building_3d(
-                df_incl,
-                selected_cycle_building,
-                st.session_state.L,
-                building_length,
-                building_width,
-                vertical_scale,
-                df_sett_angles
-            )
-            if fig_building:
-                st.plotly_chart(fig_building, use_container_width=True)
+            if total_cycles == 0:
+                st.warning("Нет доступных циклов для отображения.")
             else:
-                st.warning("Для выбранного цикла нет данных на этажах 5, 15 или 27.")
+                if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
+                    st.session_state.current_index = total_cycles - 1
+
+                # Отображаем полные названия в слайдере (через формат)
+                selected_index = st.slider(
+                    "Выбор цикла",
+                    min_value=0,
+                    max_value=total_cycles-1,
+                    value=st.session_state.current_index,
+                    step=1,
+                    format="%d",
+                    help="Перетащите для выбора цикла"
+                )
+                st.session_state.current_index = selected_index
+                selected_cycle_key = cycle_keys[selected_index]
+                # Отображаем полное название выбранного цикла
+                st.caption(f"**Текущий цикл:** {cycle_display_map[selected_cycle_key]}")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("▶ Воспроизвести"):
+                        st.session_state.auto_play_active = True
+                with col2:
+                    if st.button("⏹ Стоп"):
+                        st.session_state.auto_play_active = False
+
+                if st.session_state.get("auto_play_active", False):
+                    speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
+                    if st.session_state.current_index < total_cycles - 1:
+                        st.session_state.current_index += 1
+                        time.sleep(speed)
+                        st.rerun()
+                    else:
+                        st.session_state.auto_play_active = False
+
+                # Получаем выбранный цикл для построения модели
+                selected_cycle_building = selected_cycle_key
+                building_length = st.session_state.get("building_length", 70.46)
+                building_width = st.session_state.get("building_width", 18.69)
+                vertical_scale = st.session_state.get("vertical_scale", 1.0)
+                df_sett_angles = st.session_state.get("res_df_sett_angles", None)
+
+                fig_building = plot_building_3d(
+                    df_incl,
+                    selected_cycle_building,
+                    st.session_state.L,
+                    building_length,
+                    building_width,
+                    vertical_scale,
+                    df_sett_angles
+                )
+                if fig_building:
+                    st.plotly_chart(fig_building, use_container_width=True)
+                else:
+                    st.warning("Для выбранного цикла нет данных на этажах 5, 15 или 27.")
 
         with tab3:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
