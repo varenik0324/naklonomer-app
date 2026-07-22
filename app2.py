@@ -923,21 +923,22 @@ if uploaded_file is not None:
                             if result is not None:
                                 df_sett_angles, marks_data, all_cycles_sett = result
                                 st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
-                                st.session_state.df_sett_angles = df_sett_angles
-                                st.session_state.marks_data = marks_data
-                                st.session_state.corner_marks = corner_marks
-                                st.session_state.L_sett = L_sett
-                                st.session_state.B_sett = B_sett
-                                st.session_state.all_cycles_sett = all_cycles_sett
-                                st.session_state.zero_cycle_sett = zero_cycle_sett
+                                # Сохраняем в session_state с префиксом res_, чтобы не конфликтовать с ключами виджетов
+                                st.session_state.res_df_sett_angles = df_sett_angles
+                                st.session_state.res_marks_data = marks_data
+                                st.session_state.res_corner_marks = corner_marks
+                                st.session_state.res_L_sett = L_sett
+                                st.session_state.res_B_sett = B_sett
+                                st.session_state.res_all_cycles_sett = all_cycles_sett
+                                st.session_state.res_zero_cycle_sett = zero_cycle_sett
                             else:
                                 st.error("Не удалось рассчитать углы. Проверьте правильность введённых данных.")
                         else:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
                 # Если есть рассчитанные данные, показываем таблицу
-                if 'df_sett_angles' in st.session_state and st.session_state.df_sett_angles is not None:
-                    df_angles = st.session_state.df_sett_angles
+                if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
+                    df_angles = st.session_state.res_df_sett_angles
                     st.dataframe(df_angles, use_container_width=True)
 
         with tab2:
@@ -954,7 +955,7 @@ if uploaded_file is not None:
             selected_cycle = st.selectbox("Выберите цикл для визуализации", cycles, index=len(cycles)-1, key="vis_cycle")
             cycle_label = st.session_state.get('cycle_labels', {}).get(selected_cycle, selected_cycle)
 
-            df_sett_angles = st.session_state.get('df_sett_angles', None)
+            df_sett_angles = st.session_state.get('res_df_sett_angles', None)
             if df_sett_angles is not None and not df_sett_angles.empty:
                 sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle]
                 if not sett_row.empty:
@@ -1003,7 +1004,7 @@ if uploaded_file is not None:
                     with col2:
                         st.metric("Угол b (по оси Y)", f"{b:.3f} мм/м")
 
-            marks_data = st.session_state.get('marks_data', {})
+            marks_data = st.session_state.get('res_marks_data', {})
             if marks_data and selected_cycle in marks_data:
                 df_marks = pd.DataFrame({
                     'Марка': list(marks_data[selected_cycle].keys()),
@@ -1098,8 +1099,8 @@ if uploaded_file is not None:
             - Можно вращать и масштабировать модель мышью.
             """)
 
-            marks_data = st.session_state.get('marks_data', {})
-            df_sett_angles = st.session_state.get('df_sett_angles', None)
+            marks_data = st.session_state.get('res_marks_data', {})
+            df_sett_angles = st.session_state.get('res_df_sett_angles', None)
             coord_dict = st.session_state.get('coord_dict', None)
 
             if not marks_data or not df_sett_angles:
@@ -1203,7 +1204,7 @@ if uploaded_file is not None:
             st.info("Параметры отчёта настраиваются в левой боковой панели.")
             col1, col2, col3 = st.columns(3)
             with col1:
-                excel_data = generate_excel_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L)
+                excel_data = generate_excel_report(df_incl, st.session_state.get('res_df_sett_angles', None), cycles, alpha0_x, alpha0_y, L)
                 st.download_button(
                     label="📊 Excel",
                     data=excel_data,
@@ -1211,7 +1212,7 @@ if uploaded_file is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             with col2:
-                pdf_data = generate_pdf_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, st.session_state.report_params)
+                pdf_data = generate_pdf_report(df_incl, st.session_state.get('res_df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, st.session_state.report_params)
                 st.download_button(
                     label="📄 PDF",
                     data=pdf_data.getvalue(),
@@ -1219,7 +1220,7 @@ if uploaded_file is not None:
                     mime="application/pdf"
                 )
             with col3:
-                word_data = generate_word_report(df_incl, st.session_state.get('df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, st.session_state.report_params)
+                word_data = generate_word_report(df_incl, st.session_state.get('res_df_sett_angles', None), cycles, alpha0_x, alpha0_y, L, st.session_state.report_params)
                 st.download_button(
                     label="📝 Word",
                     data=word_data.getvalue(),
