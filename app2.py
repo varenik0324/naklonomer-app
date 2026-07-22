@@ -1176,12 +1176,17 @@ if uploaded_file is not None:
                                         marker=dict(size=8, color='red'),
                                         name='Вектор крена'
                                     ))
-                                    fig_3d.add_annotation(
-                                        x=center_x + dx, y=center_y + dy, z=0,
-                                        text=f"a={a:.2f} мм/м, b={b:.2f} мм/м",
-                                        showarrow=False,
-                                        font=dict(size=12, color='red')
-                                    )
+                                    # Добавляем текстовую метку через Scatter3d
+                                    fig_3d.add_trace(go.Scatter3d(
+                                        x=[center_x + dx],
+                                        y=[center_y + dy],
+                                        z=[0],
+                                        mode='text',
+                                        text=[f"a={a:.2f} мм/м, b={b:.2f} мм/м"],
+                                        textposition='top center',
+                                        textfont=dict(color='red', size=12),
+                                        name='Метка'
+                                    ))
 
                             fig_3d.update_layout(
                                 title=f"3D-модель осадок и крена (цикл {selected_cycle_3d})",
