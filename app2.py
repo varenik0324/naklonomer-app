@@ -27,8 +27,6 @@ if 'auto_play_active' not in st.session_state:
     st.session_state.auto_play_active = False
 if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
-if 'building_slider' not in st.session_state:
-    st.session_state.building_slider = 0
 
 # ------------------------------------------------------------
 # ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (улучшенная версия)
@@ -831,15 +829,15 @@ if uploaded_file is not None:
             if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                 st.session_state.current_index = total_cycles - 1
 
-            # Слайдер с ключом для синхронизации
+            # Слайдер без ключа, привязан к current_index
             current_idx = st.slider(
                 "Выбор цикла",
                 min_value=0,
                 max_value=total_cycles-1,
                 value=st.session_state.current_index,
-                step=1,
-                key="building_slider"
+                step=1
             )
+            # Обновляем current_index из слайдера
             st.session_state.current_index = current_idx
 
             col1, col2 = st.columns(2)
@@ -854,8 +852,6 @@ if uploaded_file is not None:
                 speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
                 if st.session_state.current_index < total_cycles - 1:
                     st.session_state.current_index += 1
-                    # Обновляем слайдер через session_state
-                    st.session_state.building_slider = st.session_state.current_index
                     time.sleep(speed)
                     st.rerun()
                 else:
