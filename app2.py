@@ -10,6 +10,7 @@ from typing import Optional, Tuple, List, Dict, Any
 # ------------------------------------------------------------
 # КОНСТАНТЫ
 # ------------------------------------------------------------
+FLOORS_NEEDED = [5, 15, 27]
 TABLE_INCLINOMETER = "Таблица 8"
 TABLE_SETTLEMENT_END = "Таблица 9"
 DEFAULT_BUILDING_LENGTH = 70.46
@@ -273,7 +274,7 @@ def parse_inclinometer_data(
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ОСАДОК
+# ПАРСИНГ ОСАДОК (с отладочными выводами)
 # ------------------------------------------------------------
 @st.cache_data
 def parse_settlement_data(
@@ -292,8 +293,17 @@ def parse_settlement_data(
     """
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
 
+    # ========== ОТЛАДКА: покажем структуру листа ==========
+    st.write("=== ОТЛАДКА ПАРСИНГА ОСАДОК ===")
+    st.write(f"Лист: {sheet_name}")
+    st.write("Первые 20 строк (первые 10 колонок):")
+    st.dataframe(df_raw.iloc[:20, :10])
+
     # --- Извлечение заголовков циклов ---
-    cycle_header_row, _ = extract_cycle_headers(df_raw)
+    cycle_header_row, cycle_names = extract_cycle_headers(df_raw)
+    st.write(f"Строка с заголовками циклов: {cycle_header_row}")
+    st.write(f"Найденные названия циклов: {cycle_names}")
+
     if cycle_header_row is None:
         st.error("Не найдена строка с заголовками циклов в листе осадок.")
         return None
@@ -302,6 +312,7 @@ def parse_settlement_data(
     cycle_cols = {}
     all_cycles = []
     if manual_osad_col is not None and manual_osad_col >= 0:
+        st.write(f"Ручной выбор колонки осадок: {manual_osad_col}")
         for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
             if pd.notna(cell):
                 cell_str = str(cell).strip()
@@ -322,6 +333,7 @@ def parse_settlement_data(
                         st.error(f"Столбец {manual_osad_col} выходит за пределы листа.")
                         return None
     else:
+        st.write("Автоматический поиск колонок с осадками...")
         for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
             if pd.notna(cell):
                 cell_str = str(cell).strip()
@@ -336,6 +348,8 @@ def parse_settlement_data(
                     else:
                         cycle_label = cell_str
                     all_cycles.append(cycle_label)
+                    st.write(f"  Цикл '{cycle_label}' найден в колонке {col_idx}")
+
                     found = False
                     for offset in [1, 2, 3]:
                         if col_idx + offset < len(df_raw.columns):
@@ -344,13 +358,19 @@ def parse_settlement_data(
                                 next_str = str(next_cell).strip().lower()
                                 if 'осадк' in next_str:
                                     cycle_cols[cycle_label] = col_idx + offset
+                                    st.write(f"    -> Колонка с осадками для этого цикла: {col_idx + offset} (слово '{next_str}')")
                                     found = True
                                     break
                     if not found:
                         if col_idx + 2 < len(df_raw.columns):
                             cycle_cols[cycle_label] = col_idx + 2
+                            st.write(f"    -> Колонка с осадками не найдена, берём по умолчанию: {col_idx + 2}")
                         elif col_idx + 1 < len(df_raw.columns):
                             cycle_cols[cycle_label] = col_idx + 1
+                            st.write(f"    -> Колонка с осадками не найдена, берём по умолчанию: {col_idx + 1}")
+
+    st.write(f"Итоговые колонки осадок: {cycle_cols}")
+    st.write(f"Все найденные циклы: {all_cycles}")
 
     if not cycle_cols:
         st.error("Не найдены колонки с осадками для циклов.")
@@ -370,6 +390,9 @@ def parse_settlement_data(
         except:
             sorted_cycles = sorted(all_cycles)
         zero_cycle_sett = sorted_cycles[0] if sorted_cycles else None
+        st.write(f"Нулевой цикл определён автоматически: {zero_cycle_sett}")
+    else:
+        st.write(f"Нулевой цикл выбран пользователем: {zero_cycle_sett}")
 
     # --- Поиск строк с марками ---
     mark_rows = []
@@ -384,6 +407,8 @@ def parse_settlement_data(
                     text_lower = cell_val.strip().lower()
                     if not any(word in text_lower for word in ['нет', 'доступ', 'нов', 'уничтож', 'примечание', 'таблица']):
                         mark_rows.append(idx)
+
+    st.write(f"Найдены строки с марками (индексы): {mark_rows}")
 
     if not mark_rows:
         st.warning(f"Не найдены строки с марками в столбце {mark_col}.")
@@ -405,6 +430,10 @@ def parse_settlement_data(
             else:
                 marks_abs_data[cycle_label][mark_str] = np.nan
 
+    st.write("Извлечённые данные осадок по циклам и маркам (только выбранные):")
+    for cycle, marks in marks_abs_data.items():
+        st.write(f"  Цикл {cycle}: { {m: marks[m] for m in corner_marks if m in marks} }")
+
     # --- Определяем нулевые осадки ---
     zero_marks = {}
     for mark in corner_marks:
@@ -413,6 +442,8 @@ def parse_settlement_data(
             zero_marks[mark_str] = marks_abs_data[zero_cycle_sett][mark_str]
         else:
             zero_marks[mark_str] = np.nan
+
+    st.write(f"Нулевые осадки для выбранных марок: {zero_marks}")
 
     if all(np.isnan(list(zero_marks.values()))):
         st.warning(f"Нулевой цикл {zero_cycle_sett} не содержит данных для выбранных марок. Используем первый доступный цикл.")
@@ -424,6 +455,8 @@ def parse_settlement_data(
             else:
                 zero_marks[mark_str] = np.nan
         zero_cycle_sett = first_cycle
+
+    st.write(f"После корректировки нулевой цикл: {zero_cycle_sett}, нулевые осадки: {zero_marks}")
 
     if all(np.isnan(list(zero_marks.values()))):
         st.error("Не удалось найти данные для выбранных угловых марок ни в одном цикле.")
@@ -863,7 +896,7 @@ if uploaded_file is not None:
                     selected_sett_sheet = st.selectbox("Выберите лист с осадками", sett_sheets, key="sett_sheet")
                     corner_marks_str = st.text_input(
                         "Номера угловых марок (через запятую, в порядке: нижний левый, нижний правый, верхний левый, верхний правый)",
-                        "1,5,9,13"
+                        "1,4,11,14"  # по умолчанию для стилобата
                     )
                     mark_col = st.number_input(
                         "Номер столбца с марками (0-индекс, обычно 0 или 1)",
@@ -889,6 +922,7 @@ if uploaded_file is not None:
                     L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
                     B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
 
+                    # --- Получаем список циклов осадок для выбора нулевого ---
                     try:
                         df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
                         cycle_header_row_test = None
@@ -1030,7 +1064,7 @@ if uploaded_file is not None:
                 else:
                     st.warning("Для выбранного цикла нет данных на выбранных этажах. Попробуйте изменить выбор этажей или цикл.")
 
-            # ---------- Раздел с формулами (исправлен) ----------
+            # ---------- Раздел с формулами ----------
             with st.expander("📐 Как строится модель (формулы и пояснения)", expanded=False):
                 st.markdown(r"""
                 **Построение 3D-модели деформаций здания** основано на данных накладного инклинометра, установленного на выбранных этажах (вы задаёте их в боковой панели).
