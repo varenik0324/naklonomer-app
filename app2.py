@@ -29,7 +29,7 @@ if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (улучшенная версия)
 # ------------------------------------------------------------
 def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, search_start=None, search_end=None):
     try:
@@ -41,6 +41,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     total_rows = len(df_raw)
     total_cols = len(df_raw.columns)
 
+    # Определяем строку заголовка циклов (с "Цикл" и датой)
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
@@ -68,9 +69,11 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
                     cycle_labels.append(cell_str)
             else:
                 cycle_labels.append("")
-        cycle_labels = [c for c in cycle_labels if c]
+        cycle_labels = [c for c in cycle_labels if c]  # убираем пустые
 
+    # Определяем диапазон строк для поиска этажей
     if manual_floor_rows is not None:
+        # Ручной ввод
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
             if 0 <= row_idx < total_rows:
@@ -86,34 +89,56 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
             st.error("Недостаточно валидных строк с этажами. Проверьте введённые индексы.")
             return None
     else:
-        if search_start is None:
-            search_start = cycle_header_row + 1 if cycle_header_row is not None else 0
-        if search_end is None:
-            end_search = total_rows
-            for idx in range(search_start, total_rows):
+        # Автоматический поиск с привязкой к Таблице 8 (углы наклона)
+        start_search = None
+        end_search = None
+        # Ищем строку с "Таблица 8"
+        for idx, row in df_raw.iterrows():
+            row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
+            if 'Таблица 8' in row_str:
+                start_search = idx + 1
+                break
+        # Ищем строку с "Таблица 9" или "Таблица 8" (конец первой таблицы)
+        if start_search is not None:
+            for idx in range(start_search, total_rows):
                 row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
-                if 'Таблица' in row_str:
+                if 'Таблица 9' in row_str or ('Таблица 8' in row_str and idx > start_search):
                     end_search = idx
                     break
-            search_end = end_search
-        else:
-            search_end = min(search_end, total_rows)
+        # fallback, если не нашли
+        if start_search is None:
+            if search_start is None:
+                start_search = cycle_header_row + 1 if cycle_header_row is not None else 0
+            else:
+                start_search = search_start
+            if search_end is None:
+                end_search = total_rows
+                for idx in range(start_search, total_rows):
+                    row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
+                    if 'Таблица' in row_str:
+                        end_search = idx
+                        break
+            else:
+                end_search = search_end
+        # Корректировка границ
+        start_search = max(0, min(start_search, total_rows-1))
+        end_search = max(start_search, min(end_search, total_rows))
 
-        search_start = max(0, min(search_start, total_rows-1))
-        search_end = max(search_start, search_end)
-
+        # Поиск этажей в диапазоне
         floor_rows = {}
-        for idx in range(search_start, search_end):
+        for idx in range(start_search, end_search):
             row = df_raw.iloc[idx]
             found_floor = None
-            for cell in row:
-                if pd.isna(cell):
-                    continue
-                cell_str = str(cell).strip()
-                match = re.search(r'\b(5|15|27)\b', cell_str)
-                if match:
-                    found_floor = int(match.group(1))
-                    break
+            # Проверяем первые две колонки (обычно этаж в колонке B)
+            for col in [0, 1]:
+                if col < len(row):
+                    cell = row.iloc[col] if hasattr(row, 'iloc') else row[col]
+                    if pd.notna(cell):
+                        cell_str = str(cell).strip()
+                        match = re.search(r'\b(5|15|27)\b', cell_str)
+                        if match:
+                            found_floor = int(match.group(1))
+                            break
             if found_floor is not None:
                 num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
                 if num_count >= 6:
@@ -127,8 +152,8 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
             st.dataframe(df_raw.iloc[:30, :10])
             return None
 
+    # Сортируем этажи и извлекаем пары значений углов
     floor_rows_sorted = [floor_rows[f] for f in sorted(floor_rows.keys())]
-
     max_pairs = 0
     for floor_idx in floor_rows_sorted:
         values = []
@@ -153,15 +178,15 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     data = []
     for floor_idx in floor_rows_sorted:
         floor_val = None
-        for col in range(0, total_cols):
-            cell = df_raw.iloc[floor_idx, col]
-            if pd.isna(cell):
-                continue
-            cell_str = str(cell).strip()
-            match = re.search(r'\b(5|15|27)\b', cell_str)
-            if match:
-                floor_val = int(match.group(1))
-                break
+        for col in [0, 1]:
+            if col < len(df_raw.columns):
+                cell = df_raw.iloc[floor_idx, col]
+                if pd.notna(cell):
+                    cell_str = str(cell).strip()
+                    match = re.search(r'\b(5|15|27)\b', cell_str)
+                    if match:
+                        floor_val = int(match.group(1))
+                        break
         if floor_val is None:
             continue
 
@@ -198,7 +223,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ОСАДОК (для расчёта углов крена)
+# ПАРСИНГ ОСАДОК (для расчёта крена)
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0, zero_cycle_sett=None, manual_osad_col=None):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -399,8 +424,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
     if df_floors.empty:
         return None
 
-    # Точки деформированной оси (накопленные смещения)
-    points = [(0, 0, 0)]  # фундамент
+    points = [(0, 0, 0)]
     cum_x, cum_y = 0.0, 0.0
     prev_floor = 0
 
@@ -421,7 +445,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
 
     fig = go.Figure()
 
-    # ---- 1. Исходная вертикаль (пунктир) ----
+    # Исходная вертикаль
     fig.add_trace(go.Scatter3d(
         x=[0, 0], y=[0, 0], z=[0, max_z],
         mode='lines',
@@ -429,7 +453,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         name='Исходная вертикаль'
     ))
 
-    # ---- 2. Деформированная ось (сплошная) ----
+    # Деформированная ось
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     zs = [p[2] for p in points]
@@ -441,7 +465,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         name='Деформированная ось'
     ))
 
-    # ---- 3. Векторы смещений на этажах (зелёные) ----
+    # Векторы смещений на этажах
     for i, (x, y, z) in enumerate(points[1:], start=1):
         floor = df_floors.iloc[i-1]['Этаж']
         fig.add_trace(go.Scatter3d(
@@ -462,7 +486,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
             showlegend=False
         ))
 
-    # ---- 4. Наклономеры (синие квадраты) с углами ----
+    # Наклономеры
     for i, (x, y, z) in enumerate(points[1:], start=1):
         floor = df_floors.iloc[i-1]['Этаж']
         alpha_x = df_floors.iloc[i-1]['αx_abs']
@@ -476,7 +500,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
             name=f'Наклономер {floor}'
         ))
 
-    # ---- 5. Общий вектор крена (от фундамента до верхней точки) ----
+    # Общий крен
     fig.add_trace(go.Scatter3d(
         x=[0, top_x], y=[0, top_y], z=[0, top_z],
         mode='lines+markers',
@@ -494,13 +518,13 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         showlegend=False
     ))
 
-    # ---- 6. Вектор крена из данных осадок (если есть) ----
+    # Крен по осадкам (если есть)
     if df_sett_angles is not None and not df_sett_angles.empty:
         sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle]
         if not sett_row.empty:
             a = sett_row['a_мм_м'].values[0]
             b = sett_row['b_мм_м'].values[0]
-            scale = 10.0  # для наглядности
+            scale = 10.0
             dx_os = a * scale
             dy_os = b * scale
             fig.add_trace(go.Scatter3d(
@@ -511,7 +535,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
                 name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
             ))
 
-    # ---- 7. Каркас здания (рёбра + горизонтальные связи) ----
+    # Каркас здания
     half_len = building_length / 2
     half_wid = building_width / 2
     corners = [
@@ -666,7 +690,6 @@ if uploaded_file is not None:
             with col4:
                 L = st.number_input("Высота этажа (L), м", value=3.0, step=0.1, format="%.1f")
 
-            # Пересчёт абсолютных углов и смещений
             zero_data = df_incl[df_incl['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'})
             df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
             df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
@@ -805,7 +828,6 @@ if uploaded_file is not None:
             if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                 st.session_state.current_index = total_cycles - 1
 
-            # Управление анимацией
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 selected_index = st.slider(
@@ -866,7 +888,6 @@ if uploaded_file is not None:
                     'Параметр': ['Габариты (в сборе)', 'Масса', 'Время автономной работы', 'Время полной зарядки', 'Аккумулятор', 'Разъём зарядки'],
                     'Значение': ['174×134×160 мм', '≤ 4500 г', '≈ 18 ч', '≈ 12 ч', 'Li‑ion 18650, 3400 мА·ч, 3,7 В', 'USB Type‑B']
                 }).set_index('Параметр'))
-
             with col2:
                 st.markdown("**Измерительный модуль**")
                 st.table(pd.DataFrame({
@@ -895,7 +916,6 @@ if uploaded_file is not None:
                 - Измерения проводите при неподвижном приборе, строго следуя двухшаговому алгоритму (0° и 180°).
                 - Результаты записывайте в журнал измерений.
                 """)
-
             st.caption("Источник: Руководство по эксплуатации УСМ-ИСН-П (ООО «СПС», 2023)")
 
     except Exception as e:
