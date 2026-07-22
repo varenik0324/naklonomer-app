@@ -12,7 +12,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import logging
-import time  # для анимации
+import time
 
 # ------------------------------------------------------------
 # Настройки страницы и инициализация session_state
@@ -33,7 +33,6 @@ if 'building_width' not in st.session_state:
 if 'auto_play_active' not in st.session_state:
     st.session_state.auto_play_active = False
 if 'coord_dict' not in st.session_state:
-    # стандартные координаты (сетка 4x4 по размерам стилобата)
     L_st = 70.46
     B_st = 18.69
     st.session_state.coord_dict = {
@@ -429,7 +428,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
-# ГЕНЕРАЦИЯ ОТЧЁТОВ (без изменений)
+# ГЕНЕРАЦИЯ ОТЧЁТОВ
 # ------------------------------------------------------------
 def generate_excel_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L):
     output = io.BytesIO()
@@ -664,7 +663,7 @@ def format_cycle_labels(df_incl, zero_cycle):
     return labels
 
 # ------------------------------------------------------------
-# 3D-МОДЕЛЬ ЗДАНИЯ (НОВАЯ ФУНКЦИЯ)
+# 3D-МОДЕЛЬ ЗДАНИЯ
 # ------------------------------------------------------------
 def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width, df_sett_angles=None):
     """
@@ -767,7 +766,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         x=[0, top_x], y=[0, top_y], z=[0, top_z],
         mode='lines+markers',
         line=dict(color='orange', width=6),
-        marker=dict(size=8, color='orange', symbol='arrow'),
+        marker=dict(size=8, color='orange', symbol='diamond'),  # исправлено: вместо 'arrow'
         name='Общий крен здания'
     ))
     # аннотация с углом крена
@@ -787,14 +786,14 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         if not sett_row.empty:
             a = sett_row['a_мм_м'].values[0]
             b = sett_row['b_мм_м'].values[0]
-            scale = 1.0  # масштаб (1 мм/м = 1 м смещения на 1000 м? – оставляем как есть)
+            scale = 1.0
             dx_os = a * scale
             dy_os = b * scale
             fig.add_trace(go.Scatter3d(
                 x=[0, dx_os], y=[0, dy_os], z=[0, 0],
                 mode='lines+markers',
                 line=dict(color='purple', width=5, dash='dash'),
-                marker=dict(size=10, color='purple', symbol='arrow'),
+                marker=dict(size=10, color='purple', symbol='diamond'),  # исправлено
                 name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
             ))
 
@@ -820,7 +819,6 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
     # горизонтальные связи на уровне фундамента и верхнего этажа
     for z_level, (x_shift, y_shift) in [(0, (0,0)), (top_z, (top_x, top_y))]:
         shifted_corners = [(cx + x_shift, cy + y_shift) for cx, cy in corners]
-        # замыкаем контур
         for i in range(4):
             x1, y1 = shifted_corners[i]
             x2, y2 = shifted_corners[(i+1)%4]
@@ -1379,7 +1377,7 @@ if uploaded_file is not None:
                                         z=[0, 0],
                                         mode='lines+markers',
                                         line=dict(color='red', width=6),
-                                        marker=dict(size=8, color='red'),
+                                        marker=dict(size=8, color='red', symbol='diamond'),  # исправлено
                                         name='Вектор крена'
                                     ))
                                     fig_3d.add_trace(go.Scatter3d(
@@ -1446,21 +1444,15 @@ if uploaded_file is not None:
             if st.session_state.get("auto_play_active", False):
                 speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
                 if selected_index < total_cycles - 1:
-                    # увеличиваем индекс через задержку
                     st.session_state.building_slider = selected_index + 1
                     time.sleep(speed)
                     st.rerun()
                 else:
                     st.session_state.auto_play_active = False
 
-            # Получаем выбранный цикл
             selected_cycle_building = cycles_building[selected_index]
-
-            # Размеры здания из session_state (задаются в боковой панели)
             building_length = st.session_state.get("building_length", 70.46)
             building_width = st.session_state.get("building_width", 18.69)
-
-            # Данные осадок, если есть
             df_sett_angles = st.session_state.get("res_df_sett_angles", None)
 
             fig_building = plot_building_3d(
