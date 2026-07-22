@@ -10,12 +10,12 @@ from typing import Optional, Tuple, List, Dict, Any
 # ------------------------------------------------------------
 # КОНСТАНТЫ
 # ------------------------------------------------------------
-FLOORS_NEEDED = [5, 15, 27]                     # Этажи с наклономерами
-TABLE_INCLINOMETER = "Таблица 8"               # Название таблицы с углами наклона
-TABLE_SETTLEMENT_END = "Таблица 9"             # Конец таблицы наклономера
-DEFAULT_BUILDING_LENGTH = 70.46                # Длина здания по умолчанию, м
-DEFAULT_BUILDING_WIDTH = 18.69                 # Ширина здания по умолчанию, м
-DEFAULT_VERTICAL_SCALE = 1.0                   # Масштаб высоты по умолчанию
+FLOORS_NEEDED = [5, 15, 27]
+TABLE_INCLINOMETER = "Таблица 8"
+TABLE_SETTLEMENT_END = "Таблица 9"
+DEFAULT_BUILDING_LENGTH = 70.46
+DEFAULT_BUILDING_WIDTH = 18.69
+DEFAULT_VERTICAL_SCALE = 1.0
 
 # ------------------------------------------------------------
 # НАСТРОЙКИ СТРАНИЦЫ И СОСТОЯНИЯ
@@ -82,7 +82,6 @@ def parse_cycle_labels(cycle_names: List[str]) -> List[str]:
                 labels.append(name)
         else:
             labels.append(name)
-    # Если не удалось распарсить даты, используем названия как есть
     if len(labels) != len(cycle_names):
         return cycle_names.copy()
     return labels
@@ -107,7 +106,6 @@ def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[
                         found_floor = int(match.group(1))
                         break
         if found_floor is not None:
-            # Проверяем, что строка содержит достаточно чисел (не менее 6)
             num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
             if num_count >= 6:
                 floor_rows[found_floor] = idx
@@ -168,7 +166,6 @@ def parse_inclinometer_data(
 
     # --- Поиск строк с этажами ---
     if manual_floor_rows is not None:
-        # Ручной ввод
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
             if 0 <= row_idx < total_rows:
@@ -184,10 +181,8 @@ def parse_inclinometer_data(
             st.error("Недостаточно валидных строк с этажами. Проверьте введённые индексы.")
             return None
     else:
-        # Автоматический поиск
         start_search = None
         end_search = None
-        # Ищем начало таблицы по метке "Таблица 8"
         for idx, row in df_raw.iterrows():
             row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
             if TABLE_INCLINOMETER in row_str:
@@ -199,7 +194,6 @@ def parse_inclinometer_data(
                 if TABLE_SETTLEMENT_END in row_str or (TABLE_INCLINOMETER in row_str and idx > start_search):
                     end_search = idx
                     break
-        # Fallback, если не нашли
         if start_search is None:
             start_search = search_start if search_start is not None else (cycle_header_row + 1 if cycle_header_row is not None else 0)
             if search_end is None:
@@ -230,7 +224,7 @@ def parse_inclinometer_data(
         if len(pairs) > max_pairs:
             max_pairs = len(pairs)
 
-    # --- Дополняем метки циклов, если их меньше, чем пар ---
+    # --- Дополняем метки циклов ---
     if cycle_labels is None:
         cycle_labels = [f"Цикл {i+1}" for i in range(max_pairs)]
         cycle_full_names = cycle_labels.copy()
@@ -309,7 +303,6 @@ def parse_settlement_data(
     cycle_cols = {}
     all_cycles = []
     if manual_osad_col is not None and manual_osad_col >= 0:
-        # Ручной выбор колонки с осадками
         for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
             if pd.notna(cell):
                 cell_str = str(cell).strip()
@@ -330,7 +323,6 @@ def parse_settlement_data(
                         st.error(f"Столбец {manual_osad_col} выходит за пределы листа.")
                         return None
     else:
-        # Автоматический поиск колонки с осадками
         for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
             if pd.notna(cell):
                 cell_str = str(cell).strip()
@@ -356,7 +348,6 @@ def parse_settlement_data(
                                     found = True
                                     break
                     if not found:
-                        # Если не нашли, берём второй столбец от заголовка
                         if col_idx + 2 < len(df_raw.columns):
                             cycle_cols[cycle_label] = col_idx + 2
                         elif col_idx + 1 < len(df_raw.columns):
@@ -387,12 +378,11 @@ def parse_settlement_data(
         cell_val = df_raw.iloc[idx, mark_col]
         if pd.notna(cell_val):
             try:
-                float(cell_val)  # пробуем преобразовать в число
+                float(cell_val)
                 mark_rows.append(idx)
             except (ValueError, TypeError):
                 if isinstance(cell_val, str) and cell_val.strip():
                     text_lower = cell_val.strip().lower()
-                    # Исключаем служебные слова
                     if not any(word in text_lower for word in ['нет', 'доступ', 'нов', 'уничтож', 'примечание', 'таблица']):
                         mark_rows.append(idx)
 
@@ -493,7 +483,7 @@ def parse_settlement_data(
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
-# РАСЧЁТ ДЕФОРМИРОВАННОЙ ОСИ (вынесено из визуализации)
+# РАСЧЁТ ДЕФОРМИРОВАННОЙ ОСИ
 # ------------------------------------------------------------
 def calculate_displacement_points(
     df_incl: pd.DataFrame,
@@ -508,7 +498,7 @@ def calculate_displacement_points(
     df_cycle = df_incl[df_incl['Цикл'] == selected_cycle]
     df_floors = df_cycle[df_cycle['Этаж'].isin(FLOORS_NEEDED)].sort_values('Этаж')
 
-    points = [(0, 0, 0)]  # фундамент
+    points = [(0, 0, 0)]
     cum_x, cum_y = 0.0, 0.0
     prev_floor = 0
 
@@ -556,7 +546,7 @@ def plot_building_3d(
 
     fig = go.Figure()
 
-    # --- 1. Исходная вертикаль (пунктир) ---
+    # --- 1. Исходная вертикаль ---
     fig.add_trace(go.Scatter3d(
         x=[0, 0], y=[0, 0], z=[0, max_z],
         mode='lines',
@@ -564,7 +554,7 @@ def plot_building_3d(
         name='Исходная вертикаль'
     ))
 
-    # --- 2. Деформированная ось (красная линия) ---
+    # --- 2. Деформированная ось ---
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     zs = [p[2] for p in points]
@@ -576,7 +566,7 @@ def plot_building_3d(
         name='Деформированная ось'
     ))
 
-    # --- 3. Векторы смещений (зелёные) и метки ---
+    # --- 3. Векторы смещений и метки ---
     for i, (x, y, z) in enumerate(points[1:], start=1):
         floor = df_floors.iloc[i-1]['Этаж']
         fig.add_trace(go.Scatter3d(
@@ -597,7 +587,7 @@ def plot_building_3d(
             showlegend=False
         ))
 
-    # --- 4. Наклономеры (синие квадраты) с углами ---
+    # --- 4. Наклономеры ---
     for i, (x, y, z) in enumerate(points[1:], start=1):
         floor = df_floors.iloc[i-1]['Этаж']
         alpha_x = df_floors.iloc[i-1]['αx_abs']
@@ -611,7 +601,7 @@ def plot_building_3d(
             name=f'Наклономер {floor}'
         ))
 
-    # --- 5. Общий крен здания (оранжевая стрелка) ---
+    # --- 5. Общий крен ---
     fig.add_trace(go.Scatter3d(
         x=[0, top_x], y=[0, top_y], z=[0, top_z],
         mode='lines+markers',
@@ -629,13 +619,13 @@ def plot_building_3d(
         showlegend=False
     ))
 
-    # --- 6. Крен по осадкам (фиолетовый вектор), если есть ---
+    # --- 6. Крен по осадкам ---
     if df_sett_angles is not None and not df_sett_angles.empty:
         sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle]
         if not sett_row.empty:
             a = sett_row['a_мм_м'].values[0]
             b = sett_row['b_мм_м'].values[0]
-            scale = 10.0  # коэффициент для наглядности
+            scale = 10.0
             dx_os = a * scale
             dy_os = b * scale
             fig.add_trace(go.Scatter3d(
@@ -646,7 +636,7 @@ def plot_building_3d(
                 name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
             ))
 
-    # --- 7. Каркас здания (чёрные рёбра) ---
+    # --- 7. Каркас здания ---
     half_len = building_length / 2
     half_wid = building_width / 2
     corners = [
@@ -655,7 +645,6 @@ def plot_building_3d(
         ( half_len,  half_wid),
         (-half_len,  half_wid)
     ]
-    # Вертикальные рёбра
     for cx, cy in corners:
         fig.add_trace(go.Scatter3d(
             x=[cx, cx + top_x],
@@ -665,7 +654,6 @@ def plot_building_3d(
             line=dict(color='black', width=2),
             showlegend=False
         ))
-    # Горизонтальные связи на уровне фундамента и верха
     for z_level, (x_shift, y_shift) in [(0, (0, 0)), (top_z, (top_x, top_y))]:
         shifted_corners = [(cx + x_shift, cy + y_shift) for cx, cy in corners]
         for i in range(4):
@@ -963,17 +951,22 @@ if uploaded_file is not None:
                         else:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
-                # Отображение таблицы осадок с осмысленными данными
+                # Отображение таблицы осадок с форматированием через column_config
                 if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
-                    df_angles = st.session_state.res_df_sett_angles
-                    # Форматируем числа с 3 знаками после запятой
-                    df_angles['a_мм_м'] = df_angles['a_мм_м'].map(lambda x: f"{x:.3f}")
-                    df_angles['b_мм_м'] = df_angles['b_мм_м'].map(lambda x: f"{x:.3f}")
-                    df_angles['a_град'] = df_angles['a_град'].map(lambda x: f"{x:.4f}")
-                    df_angles['b_град'] = df_angles['b_град'].map(lambda x: f"{x:.4f}")
+                    df_angles = st.session_state.res_df_sett_angles.copy()
                     st.subheader("Таблица углов крена по осадкам")
                     st.caption("**Примечание:** показаны углы для всех циклов (кроме нулевого, где значения равны 0).")
-                    st.dataframe(df_angles, use_container_width=True)
+                    st.dataframe(
+                        df_angles,
+                        column_config={
+                            "Цикл": "Цикл",
+                            "a_мм_м": st.column_config.NumberColumn("a, мм/м", format="%.3f"),
+                            "b_мм_м": st.column_config.NumberColumn("b, мм/м", format="%.3f"),
+                            "a_град": st.column_config.NumberColumn("a, град", format="%.4f"),
+                            "b_град": st.column_config.NumberColumn("b, град", format="%.4f"),
+                        },
+                        use_container_width=True
+                    )
 
         with tab2:
             st.subheader("🏢 3D-модель здания с креном и наклономерами")
@@ -1028,7 +1021,7 @@ if uploaded_file is not None:
                 else:
                     st.warning("Для выбранного цикла нет данных на этажах 5, 15 или 27.")
 
-            # ---------- Раздел с формулами (красивые формулы) ----------
+            # ---------- Раздел с формулами ----------
             with st.expander("📐 Как строится модель (формулы и пояснения)", expanded=False):
                 st.markdown(r"""
                 **Построение 3D-модели деформаций здания** основано на данных накладного инклинометра, установленного на этажах 5, 15 и 27.
