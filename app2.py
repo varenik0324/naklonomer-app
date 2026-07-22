@@ -23,13 +23,15 @@ if 'building_length' not in st.session_state:
     st.session_state.building_length = 70.46
 if 'building_width' not in st.session_state:
     st.session_state.building_width = 18.69
+if 'vertical_scale' not in st.session_state:
+    st.session_state.vertical_scale = 1.0
 if 'auto_play_active' not in st.session_state:
     st.session_state.auto_play_active = False
 if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (улучшенная версия)
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА
 # ------------------------------------------------------------
 def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, search_start=None, search_end=None):
     try:
@@ -41,7 +43,6 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     total_rows = len(df_raw)
     total_cols = len(df_raw.columns)
 
-    # Определяем строку заголовка циклов (с "Цикл" и датой)
     cycle_header_row = None
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
@@ -69,11 +70,9 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
                     cycle_labels.append(cell_str)
             else:
                 cycle_labels.append("")
-        cycle_labels = [c for c in cycle_labels if c]  # убираем пустые
+        cycle_labels = [c for c in cycle_labels if c]
 
-    # Определяем диапазон строк для поиска этажей
     if manual_floor_rows is not None:
-        # Ручной ввод
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
             if 0 <= row_idx < total_rows:
@@ -89,23 +88,19 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
             st.error("Недостаточно валидных строк с этажами. Проверьте введённые индексы.")
             return None
     else:
-        # Автоматический поиск с привязкой к Таблице 8 (углы наклона)
         start_search = None
         end_search = None
-        # Ищем строку с "Таблица 8"
         for idx, row in df_raw.iterrows():
             row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
             if 'Таблица 8' in row_str:
                 start_search = idx + 1
                 break
-        # Ищем строку с "Таблица 9" или "Таблица 8" (конец первой таблицы)
         if start_search is not None:
             for idx in range(start_search, total_rows):
                 row_str = ' '.join(str(cell) for cell in df_raw.iloc[idx] if pd.notna(cell))
                 if 'Таблица 9' in row_str or ('Таблица 8' in row_str and idx > start_search):
                     end_search = idx
                     break
-        # fallback, если не нашли
         if start_search is None:
             if search_start is None:
                 start_search = cycle_header_row + 1 if cycle_header_row is not None else 0
@@ -120,16 +115,13 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
                         break
             else:
                 end_search = search_end
-        # Корректировка границ
         start_search = max(0, min(start_search, total_rows-1))
         end_search = max(start_search, min(end_search, total_rows))
 
-        # Поиск этажей в диапазоне
         floor_rows = {}
         for idx in range(start_search, end_search):
             row = df_raw.iloc[idx]
             found_floor = None
-            # Проверяем первые две колонки (обычно этаж в колонке B)
             for col in [0, 1]:
                 if col < len(row):
                     cell = row.iloc[col] if hasattr(row, 'iloc') else row[col]
@@ -152,7 +144,6 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
             st.dataframe(df_raw.iloc[:30, :10])
             return None
 
-    # Сортируем этажи и извлекаем пары значений углов
     floor_rows_sorted = [floor_rows[f] for f in sorted(floor_rows.keys())]
     max_pairs = 0
     for floor_idx in floor_rows_sorted:
@@ -223,7 +214,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ОСАДОК (для расчёта крена)
+# ПАРСИНГ ОСАДОК
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0, zero_cycle_sett=None, manual_osad_col=None):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -414,9 +405,9 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
-# 3D-МОДЕЛЬ ЗДАНИЯ
+# 3D-МОДЕЛЬ ЗДАНИЯ с поддержкой вертикального масштаба
 # ------------------------------------------------------------
-def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width, df_sett_angles=None):
+def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width, vertical_scale=1.0, df_sett_angles=None):
     floors_needed = [5, 15, 27]
     df_cycle = df_incl[df_incl['Цикл'] == selected_cycle]
     df_floors = df_cycle[df_cycle['Этаж'].isin(floors_needed)].sort_values('Этаж')
@@ -437,11 +428,11 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         dy = delta_h * np.sin(np.radians(alpha_y))
         cum_x += dx
         cum_y += dy
-        points.append((cum_x, cum_y, floor * L))
+        points.append((cum_x, cum_y, floor * L * vertical_scale))
         prev_floor = floor
 
     top_x, top_y, top_z = points[-1]
-    max_z = 27 * L
+    max_z = 27 * L * vertical_scale
 
     fig = go.Figure()
 
@@ -465,7 +456,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         name='Деформированная ось'
     ))
 
-    # Векторы смещений на этажах
+    # Векторы смещений
     for i, (x, y, z) in enumerate(points[1:], start=1):
         floor = df_floors.iloc[i-1]['Этаж']
         fig.add_trace(go.Scatter3d(
@@ -518,7 +509,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         showlegend=False
     ))
 
-    # Крен по осадкам (если есть)
+    # Крен по осадкам
     if df_sett_angles is not None and not df_sett_angles.empty:
         sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle]
         if not sett_row.empty:
@@ -535,7 +526,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
                 name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
             ))
 
-    # Каркас здания
+    # Каркас здания с учётом вертикального масштаба
     half_len = building_length / 2
     half_wid = building_width / 2
     corners = [
@@ -566,7 +557,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
             ))
 
     fig.update_layout(
-        title=f"3D-модель здания – цикл {selected_cycle}",
+        title=f"3D-модель здания – цикл {selected_cycle} (верт. масштаб {vertical_scale:.1f})",
         scene=dict(
             xaxis_title="Смещение X, м",
             yaxis_title="Смещение Y, м",
@@ -650,18 +641,27 @@ if uploaded_file is not None:
 
         # --- Боковая панель: размеры здания для 3D ---
         st.sidebar.subheader("Размеры здания для 3D-модели")
-        # Переименовали "Длина" на "Высота" по просьбе пользователя
         st.session_state.building_length = st.sidebar.number_input(
-            "Высота здания, м",
+            "Длина здания в плане (X), м",
             value=st.session_state.get("building_length", 70.46),
             step=0.1,
-            key="building_length_input"
+            key="building_length_input",
+            help="Горизонтальный размер вдоль оси X"
         )
         st.session_state.building_width = st.sidebar.number_input(
-            "Ширина здания, м",
+            "Ширина здания в плане (Y), м",
             value=st.session_state.get("building_width", 18.69),
             step=0.1,
-            key="building_width_input"
+            key="building_width_input",
+            help="Горизонтальный размер вдоль оси Y"
+        )
+        st.session_state.vertical_scale = st.sidebar.slider(
+            "Вертикальный масштаб (высота)",
+            min_value=0.5,
+            max_value=2.0,
+            value=st.session_state.get("vertical_scale", 1.0),
+            step=0.1,
+            help="Коэффициент визуального увеличения высоты здания (1.0 = реальная высота)"
         )
 
         # --- Основная область с вкладками ---
@@ -735,7 +735,6 @@ if uploaded_file is not None:
                     L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
                     B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
 
-                    # Получаем список циклов осадок
                     try:
                         df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
                         cycle_header_row_test = None
@@ -806,7 +805,6 @@ if uploaded_file is not None:
                         else:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
-                # Если есть рассчитанные данные, показываем таблицу
                 if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
                     st.dataframe(st.session_state.res_df_sett_angles, use_container_width=True)
 
@@ -829,7 +827,6 @@ if uploaded_file is not None:
             if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                 st.session_state.current_index = total_cycles - 1
 
-            # Слайдер без ключа, привязан к current_index
             current_idx = st.slider(
                 "Выбор цикла",
                 min_value=0,
@@ -837,7 +834,6 @@ if uploaded_file is not None:
                 value=st.session_state.current_index,
                 step=1
             )
-            # Обновляем current_index из слайдера
             st.session_state.current_index = current_idx
 
             col1, col2 = st.columns(2)
@@ -860,6 +856,7 @@ if uploaded_file is not None:
             selected_cycle_building = cycles_building[st.session_state.current_index]
             building_length = st.session_state.get("building_length", 70.46)
             building_width = st.session_state.get("building_width", 18.69)
+            vertical_scale = st.session_state.get("vertical_scale", 1.0)
             df_sett_angles = st.session_state.get("res_df_sett_angles", None)
 
             fig_building = plot_building_3d(
@@ -868,6 +865,7 @@ if uploaded_file is not None:
                 st.session_state.L,
                 building_length,
                 building_width,
+                vertical_scale,
                 df_sett_angles
             )
             if fig_building:
