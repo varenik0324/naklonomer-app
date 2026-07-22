@@ -670,6 +670,56 @@ if uploaded_file is not None:
         }
         st.session_state.report_params = report_params
 
+        # --- Боковая панель: координаты марок для 3D ---
+        st.sidebar.subheader("Координаты марок для 3D-модели")
+        coord_file = st.sidebar.file_uploader(
+            "Загрузите CSV с координатами (колонки: Марка, X, Y)",
+            type=['csv'],
+            key='coord_uploader'
+        )
+        if coord_file is not None:
+            try:
+                df_coord = pd.read_csv(coord_file)
+                if len(df_coord.columns) < 3:
+                    st.sidebar.error("Файл должен содержать как минимум 3 колонки: Марка, X, Y")
+                else:
+                    coord_dict = {}
+                    for _, row in df_coord.iterrows():
+                        mark = str(row[0]).strip()
+                        try:
+                            x = float(row[1])
+                            y = float(row[2])
+                        except:
+                            continue
+                        coord_dict[mark] = (x, y)
+                    st.session_state.coord_dict = coord_dict
+                    st.sidebar.success(f"Загружено {len(coord_dict)} марок!")
+            except Exception as e:
+                st.sidebar.error(f"Ошибка чтения файла: {e}")
+        else:
+            # Если файл не загружен, создаём стандартную сетку по размерам стилобата
+            if 'coord_dict' not in st.session_state:
+                L_st = 70.46
+                B_st = 18.69
+                coord_dict = {
+                    '1': (0, 0),
+                    '2': (L_st/3, 0),
+                    '3': (2*L_st/3, 0),
+                    '4': (L_st, 0),
+                    '5': (0, B_st/3),
+                    '6': (L_st/3, B_st/3),
+                    '7': (2*L_st/3, B_st/3),
+                    '8': (L_st, B_st/3),
+                    '9': (0, 2*B_st/3),
+                    '10': (L_st/3, 2*B_st/3),
+                    '11': (2*L_st/3, 2*B_st/3),
+                    '12': (L_st, 2*B_st/3),
+                    '13': (0, B_st),
+                    '14': (L_st, B_st),
+                }
+                st.session_state.coord_dict = coord_dict
+                st.sidebar.info("Используются стандартные координаты (сетка 4x4 по размерам стилобата).")
+
         # --- Основная область с вкладками ---
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📊 Данные и параметры",
@@ -855,20 +905,17 @@ if uploaded_file is not None:
                 if not sett_row.empty:
                     a = sett_row['a_мм_м'].values[0]
                     b = sett_row['b_мм_м'].values[0]
-                    # Масштабируем вектор для наглядности (умножаем на 1000, чтобы было видно)
                     scale = 1000
                     ax_vis = a * scale
                     ay_vis = b * scale
 
                     fig_sett = go.Figure()
-                    # Рисуем фундамент (прямоугольник)
                     fig_sett.add_shape(
                         type="rect",
                         x0=-0.5, y0=-0.5, x1=0.5, y1=0.5,
                         line=dict(color="black", width=2),
                         fillcolor="lightblue", opacity=0.3
                     )
-                    # Рисуем вектор смещения (из центра)
                     fig_sett.add_annotation(
                         x=ax_vis, y=ay_vis,
                         text=f"a={a:.2f} мм/м, b={b:.2f} мм/м",
@@ -895,7 +942,6 @@ if uploaded_file is not None:
                     )
                     st.plotly_chart(fig_sett, use_container_width=True)
 
-                    # Текстовый вывод углов
                     col1, col2 = st.columns(2)
                     with col1:
                         st.metric("Угол a (по оси X)", f"{a:.3f} мм/м")
@@ -909,7 +955,6 @@ if uploaded_file is not None:
                     'Марка': list(marks_data[selected_cycle].keys()),
                     'Осадка, мм': list(marks_data[selected_cycle].values())
                 })
-                # Сортируем по убыванию осадки
                 df_marks = df_marks.sort_values('Осадка, мм', ascending=False)
                 fig_bar = px.bar(
                     df_marks, x='Марка', y='Осадка, мм',
@@ -922,7 +967,6 @@ if uploaded_file is not None:
 
             # --- 3. Сравнение углов ---
             if df_sett_angles is not None and not df_sett_angles.empty:
-                # Получаем средний крен по наклономеру для выбранного цикла
                 kren_df = df_incl.groupby('Цикл', as_index=False)[['αx_abs', 'αy_abs']].mean()
                 merged = pd.merge(kren_df, df_sett_angles, on='Цикл', how='inner')
                 if not merged.empty:
@@ -996,7 +1040,7 @@ if uploaded_file is not None:
             st.subheader("🌐 3D-модель фундамента с осадками")
             st.markdown("""
             **ℹ️ Пояснение:** Трёхмерная визуализация показывает:
-            - **План фундамента** (XY) – расположение марок.
+            - **План фундамента** (XY) – расположение марок (координаты можно загрузить в боковой панели).
             - **Осадки (Z)** – вертикальные столбцы (цвет показывает величину осадки).
             - **Вектор крена** – направление и величина наклона (если данные осадок доступны).
             - Можно вращать и масштабировать модель мышью.
@@ -1004,6 +1048,7 @@ if uploaded_file is not None:
 
             marks_data = st.session_state.get('marks_data', {})
             df_sett_angles = st.session_state.get('df_sett_angles', None)
+            coord_dict = st.session_state.get('coord_dict', None)
 
             if not marks_data or not df_sett_angles:
                 st.warning("Сначала рассчитайте осадки в вкладке 'Данные и параметры'.")
@@ -1015,134 +1060,91 @@ if uploaded_file is not None:
                 if not sett_dict:
                     st.warning("Нет данных осадок для выбранного цикла.")
                 else:
-                    # Генерируем координаты для марок (условно, по сетке)
-                    # В реальном проекте нужно читать координаты из листа "план"
-                    mark_keys = [str(k) for k in sett_dict.keys() if not np.isnan(sett_dict.get(k, np.nan))]
-                    mark_keys_sorted = sorted(mark_keys, key=lambda x: int(x) if x.isdigit() else x)
-
-                    # Условные координаты (можно будет заменить на реальные)
-                    coord_dict = {}
-                    step = 1.0
-                    # Нижний ряд (y=0)
-                    if '1' in mark_keys_sorted:
-                        coord_dict['1'] = (0, 0)
-                    if '2' in mark_keys_sorted:
-                        coord_dict['2'] = (step, 0)
-                    if '3' in mark_keys_sorted:
-                        coord_dict['3'] = (2*step, 0)
-                    if '4' in mark_keys_sorted:
-                        coord_dict['4'] = (3*step, 0)
-                    # Второй ряд (y=step)
-                    if '5' in mark_keys_sorted:
-                        coord_dict['5'] = (0, step)
-                    if '6' in mark_keys_sorted:
-                        coord_dict['6'] = (step, step)
-                    if '7' in mark_keys_sorted:
-                        coord_dict['7'] = (2*step, step)
-                    if '8' in mark_keys_sorted:
-                        coord_dict['8'] = (3*step, step)
-                    # Третий ряд (y=2*step)
-                    if '9' in mark_keys_sorted:
-                        coord_dict['9'] = (0, 2*step)
-                    if '10' in mark_keys_sorted:
-                        coord_dict['10'] = (step, 2*step)
-                    if '11' in mark_keys_sorted:
-                        coord_dict['11'] = (2*step, 2*step)
-                    if '12' in mark_keys_sorted:
-                        coord_dict['12'] = (3*step, 2*step)
-                    # Четвёртый ряд (y=3*step)
-                    if '13' in mark_keys_sorted:
-                        coord_dict['13'] = (0, 3*step)
-                    if '14' in mark_keys_sorted:
-                        coord_dict['14'] = (step, 3*step)
-
-                    # Удаляем марки без координат
-                    mark_keys_filtered = [m for m in mark_keys_sorted if m in coord_dict]
-                    if not mark_keys_filtered:
-                        st.error("Нет марок с координатами.")
+                    if coord_dict is None:
+                        st.error("Не загружены координаты марок. Загрузите CSV в боковой панели или используйте стандартные.")
                     else:
-                        # Строим 3D график
-                        fig_3d = go.Figure()
+                        mark_keys_filtered = [m for m in sett_dict.keys() if m in coord_dict and not np.isnan(sett_dict.get(m, np.nan))]
+                        if not mark_keys_filtered:
+                            st.error("Нет марок с координатами и осадками.")
+                        else:
+                            fig_3d = go.Figure()
 
-                        # Столбцы осадок
-                        for mark in mark_keys_filtered:
-                            x, y = coord_dict[mark]
-                            z = sett_dict.get(mark, 0)
-                            if np.isnan(z):
-                                z = 0
-                            fig_3d.add_trace(go.Scatter3d(
-                                x=[x, x],
-                                y=[y, y],
-                                z=[0, z],
-                                mode='lines',
-                                line=dict(color='blue', width=4),
-                                name=f'Марка {mark}'
-                            ))
-                            fig_3d.add_trace(go.Scatter3d(
-                                x=[x],
-                                y=[y],
-                                z=[z],
-                                mode='markers',
-                                marker=dict(size=8, color=z, colorscale='RdYlGn_r',
-                                            colorbar=dict(title="Осадка, мм")),
-                                name=f'Осадка {mark}'
-                            ))
-
-                        # Плоскость основания (Z=0)
-                        xs = [coord_dict[m][0] for m in mark_keys_filtered]
-                        ys = [coord_dict[m][1] for m in mark_keys_filtered]
-                        if xs and ys:
-                            x_range = np.linspace(min(xs)-0.5, max(xs)+0.5, 10)
-                            y_range = np.linspace(min(ys)-0.5, max(ys)+0.5, 10)
-                            X_grid, Y_grid = np.meshgrid(x_range, y_range)
-                            Z_grid = np.zeros_like(X_grid)
-                            fig_3d.add_trace(go.Surface(
-                                x=x_range, y=y_range, z=Z_grid,
-                                colorscale='Greys', opacity=0.3,
-                                showscale=False, name='Основание'
-                            ))
-
-                        # Вектор крена
-                        if df_sett_angles is not None and not df_sett_angles.empty:
-                            sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle_3d]
-                            if not sett_row.empty:
-                                a = sett_row['a_мм_м'].values[0]
-                                b = sett_row['b_мм_м'].values[0]
-                                scale_3d = 10  # масштаб для визуализации
-                                dx = a * scale_3d
-                                dy = b * scale_3d
-                                center_x = np.mean(xs)
-                                center_y = np.mean(ys)
+                            for mark in mark_keys_filtered:
+                                x, y = coord_dict[mark]
+                                z = sett_dict.get(mark, 0)
+                                if np.isnan(z):
+                                    z = 0
                                 fig_3d.add_trace(go.Scatter3d(
-                                    x=[center_x, center_x + dx],
-                                    y=[center_y, center_y + dy],
-                                    z=[0, 0],
-                                    mode='lines+markers',
-                                    line=dict(color='red', width=6),
-                                    marker=dict(size=8, color='red'),
-                                    name='Вектор крена'
+                                    x=[x, x],
+                                    y=[y, y],
+                                    z=[0, z],
+                                    mode='lines',
+                                    line=dict(color='blue', width=4),
+                                    name=f'Марка {mark}'
                                 ))
-                                fig_3d.add_annotation(
-                                    x=center_x + dx, y=center_y + dy, z=0,
-                                    text=f"a={a:.2f} мм/м, b={b:.2f} мм/м",
-                                    showarrow=False,
-                                    font=dict(size=12, color='red')
-                                )
+                                fig_3d.add_trace(go.Scatter3d(
+                                    x=[x],
+                                    y=[y],
+                                    z=[z],
+                                    mode='markers',
+                                    marker=dict(size=8, color=z, colorscale='RdYlGn_r',
+                                                colorbar=dict(title="Осадка, мм")),
+                                    name=f'Осадка {mark}'
+                                ))
 
-                        fig_3d.update_layout(
-                            title=f"3D-модель осадок и крена (цикл {selected_cycle_3d})",
-                            scene=dict(
-                                xaxis_title="X, м",
-                                yaxis_title="Y, м",
-                                zaxis_title="Осадка, мм",
-                                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
-                            ),
-                            width=800,
-                            height=700,
-                            template="plotly_white"
-                        )
-                        st.plotly_chart(fig_3d, use_container_width=True)
-                        st.caption("Синие столбцы – осадки марок. Красный вектор – направление и величина крена (по данным осадок).")
+                            xs = [coord_dict[m][0] for m in mark_keys_filtered]
+                            ys = [coord_dict[m][1] for m in mark_keys_filtered]
+                            if xs and ys:
+                                x_range = np.linspace(min(xs)-0.5, max(xs)+0.5, 10)
+                                y_range = np.linspace(min(ys)-0.5, max(ys)+0.5, 10)
+                                X_grid, Y_grid = np.meshgrid(x_range, y_range)
+                                Z_grid = np.zeros_like(X_grid)
+                                fig_3d.add_trace(go.Surface(
+                                    x=x_range, y=y_range, z=Z_grid,
+                                    colorscale='Greys', opacity=0.3,
+                                    showscale=False, name='Основание'
+                                ))
+
+                            if df_sett_angles is not None and not df_sett_angles.empty:
+                                sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle_3d]
+                                if not sett_row.empty:
+                                    a = sett_row['a_мм_м'].values[0]
+                                    b = sett_row['b_мм_м'].values[0]
+                                    scale_3d = 10
+                                    dx = a * scale_3d
+                                    dy = b * scale_3d
+                                    center_x = np.mean(xs)
+                                    center_y = np.mean(ys)
+                                    fig_3d.add_trace(go.Scatter3d(
+                                        x=[center_x, center_x + dx],
+                                        y=[center_y, center_y + dy],
+                                        z=[0, 0],
+                                        mode='lines+markers',
+                                        line=dict(color='red', width=6),
+                                        marker=dict(size=8, color='red'),
+                                        name='Вектор крена'
+                                    ))
+                                    fig_3d.add_annotation(
+                                        x=center_x + dx, y=center_y + dy, z=0,
+                                        text=f"a={a:.2f} мм/м, b={b:.2f} мм/м",
+                                        showarrow=False,
+                                        font=dict(size=12, color='red')
+                                    )
+
+                            fig_3d.update_layout(
+                                title=f"3D-модель осадок и крена (цикл {selected_cycle_3d})",
+                                scene=dict(
+                                    xaxis_title="X, м",
+                                    yaxis_title="Y, м",
+                                    zaxis_title="Осадка, мм",
+                                    camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
+                                ),
+                                width=800,
+                                height=700,
+                                template="plotly_white"
+                            )
+                            st.plotly_chart(fig_3d, use_container_width=True)
+                            st.caption("Синие столбцы – осадки марок. Красный вектор – направление и величина крена (по данным осадок).")
 
         with tab4:
             st.subheader("📥 Скачать отчёт")
