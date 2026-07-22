@@ -923,7 +923,6 @@ if uploaded_file is not None:
                             if result is not None:
                                 df_sett_angles, marks_data, all_cycles_sett = result
                                 st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
-                                # Сохраняем в session_state с префиксом res_, чтобы не конфликтовать с ключами виджетов
                                 st.session_state.res_df_sett_angles = df_sett_angles
                                 st.session_state.res_marks_data = marks_data
                                 st.session_state.res_corner_marks = corner_marks
@@ -1103,7 +1102,7 @@ if uploaded_file is not None:
             df_sett_angles = st.session_state.get('res_df_sett_angles', None)
             coord_dict = st.session_state.get('coord_dict', None)
 
-            if not marks_data or not df_sett_angles:
+            if not marks_data or (df_sett_angles is None or df_sett_angles.empty):
                 st.warning("Сначала рассчитайте осадки в вкладке 'Данные и параметры'.")
             else:
                 cycles_3d = sorted(marks_data.keys())
