@@ -405,7 +405,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
-# 3D-МОДЕЛЬ ЗДАНИЯ с поддержкой вертикального масштаба
+# 3D-МОДЕЛЬ ЗДАНИЯ с легендой справа
 # ------------------------------------------------------------
 def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width, vertical_scale=1.0, df_sett_angles=None):
     floors_needed = [5, 15, 27]
@@ -526,7 +526,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
                 name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
             ))
 
-    # Каркас здания с учётом вертикального масштаба
+    # Каркас здания
     half_len = building_length / 2
     half_wid = building_width / 2
     corners = [
@@ -542,6 +542,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
             z=[0, top_z],
             mode='lines',
             line=dict(color='black', width=2),
+            name='Каркас здания',
             showlegend=False
         ))
     for z_level, (x_shift, y_shift) in [(0, (0,0)), (top_z, (top_x, top_y))]:
@@ -556,6 +557,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
                 showlegend=False
             ))
 
+    # Настройка сцены с легендой справа
     fig.update_layout(
         title=f"3D-модель здания – цикл {selected_cycle} (верт. масштаб {vertical_scale:.1f})",
         scene=dict(
@@ -568,7 +570,13 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         width=900,
         height=750,
         template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(
+            orientation="v",          # вертикальная ориентация
+            xanchor="left",           # привязка к левому краю легенды
+            x=1.02,                   # смещение вправо от графика
+            y=1,                      # привязка к верхнему краю
+            yanchor="top"             # верхняя часть легенды на уровне y=1
+        )
     )
     return fig
 
