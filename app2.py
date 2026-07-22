@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 import io
 import re
 from datetime import datetime
-import time
 
 # ------------------------------------------------------------
 # Настройки страницы и инициализация session_state
@@ -25,8 +24,6 @@ if 'building_width' not in st.session_state:
     st.session_state.building_width = 18.69
 if 'vertical_scale' not in st.session_state:
     st.session_state.vertical_scale = 1.0
-if 'auto_play_active' not in st.session_state:
-    st.session_state.auto_play_active = False
 if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
 
@@ -44,13 +41,12 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     total_cols = len(df_raw.columns)
 
     cycle_header_row = None
-    cycle_full_names = []  # список полных названий циклов в порядке следования в таблице
+    cycle_full_names = []
 
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
         if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
             cycle_header_row = idx
-            # Извлекаем все полные названия из строки заголовка
             for col in range(1, total_cols):
                 cell = df_raw.iloc[cycle_header_row, col]
                 if pd.notna(cell):
@@ -65,7 +61,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         cycle_labels = None
         cycle_full_names = None
     else:
-        cycle_labels = []  # даты в формате YYYY-MM-DD
+        cycle_labels = []
         for name in cycle_full_names:
             match = re.search(r'(\d{2}\.\d{2}\.\d{4})', name)
             if match:
@@ -79,7 +75,6 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         if len(cycle_labels) != len(cycle_full_names):
             cycle_labels = cycle_full_names.copy()
 
-    # Определяем диапазон строк для поиска этажей
     if manual_floor_rows is not None:
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
@@ -205,7 +200,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         for i, (ax, ay) in enumerate(pairs):
             if i < len(cycle_labels):
                 data.append({
-                    'Цикл': cycle_labels[i],          # ключ-дата (или номер)
+                    'Цикл': cycle_labels[i],
                     'Цикл_полное': cycle_full_names[i] if cycle_full_names and i < len(cycle_full_names) else cycle_labels[i],
                     'Этаж': floor_val,
                     'αx': ax,
@@ -582,11 +577,11 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         height=750,
         template="plotly_white",
         legend=dict(
-            orientation="v",          # вертикально
-            yanchor="top",            # привязка к верхнему краю
-            y=1,                      # верхняя граница
-            xanchor="left",           # привязка к левому краю легенды
-            x=1.02                    # отступ справа от графика
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02
         )
     )
     return fig
@@ -595,11 +590,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
 # ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: формирование списка для выпадающих списков
 # ------------------------------------------------------------
 def get_cycle_display_options(df_incl):
-    """
-    Возвращает словарь: ключ (дата/номер) -> полное название для отображения
-    """
     unique = df_incl[['Цикл', 'Цикл_полное']].drop_duplicates()
-    # Сортируем по строковому представлению (даты в формате YYYY-MM-DD сортируются корректно)
     unique_sorted = unique.sort_values('Цикл')
     return dict(zip(unique_sorted['Цикл'], unique_sorted['Цикл_полное']))
 
@@ -634,7 +625,6 @@ if uploaded_file is not None:
             search_start = None
             search_end = None
 
-        # Парсинг наклономера
         df_incl = parse_inclinometer_data(file_bytes, incl_sheet_name, search_start=search_start, search_end=search_end)
 
         if df_incl is None:
@@ -702,13 +692,11 @@ if uploaded_file is not None:
             "📘 Наклономер"
         ])
 
-        # Получаем словарь для отображения циклов
         cycle_display_map = get_cycle_display_options(df_incl)
-        cycle_keys = list(cycle_display_map.keys())  # список ключей (дат)
+        cycle_keys = list(cycle_display_map.keys())
 
         with tab1:
             st.subheader("Данные наклономера")
-            # В таблице показываем полное название цикла
             df_display = df_incl.copy()
             df_display['Цикл'] = df_display['Цикл'].map(cycle_display_map)
             st.dataframe(df_display, use_container_width=True)
@@ -720,13 +708,11 @@ if uploaded_file is not None:
             st.subheader("⚙️ Параметры расчёта")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                # Выпадающий список с полными названиями
                 zero_cycle_display = st.selectbox(
                     "Нулевой цикл",
                     options=[cycle_display_map[k] for k in cycle_keys],
                     index=0
                 )
-                # Находим соответствующий ключ
                 zero_cycle = [k for k, v in cycle_display_map.items() if v == zero_cycle_display][0]
             with col2:
                 alpha0_x = st.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
@@ -779,7 +765,6 @@ if uploaded_file is not None:
                     L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
                     B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
 
-                    # Получаем список циклов осадок
                     try:
                         df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
                         cycle_header_row_test = None
@@ -874,7 +859,6 @@ if uploaded_file is not None:
                 if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                     st.session_state.current_index = total_cycles - 1
 
-                # Отображаем полные названия в слайдере (через формат)
                 selected_index = st.slider(
                     "Выбор цикла",
                     min_value=0,
@@ -886,27 +870,8 @@ if uploaded_file is not None:
                 )
                 st.session_state.current_index = selected_index
                 selected_cycle_key = cycle_keys[selected_index]
-                # Отображаем полное название выбранного цикла
                 st.caption(f"**Текущий цикл:** {cycle_display_map[selected_cycle_key]}")
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("▶ Воспроизвести"):
-                        st.session_state.auto_play_active = True
-                with col2:
-                    if st.button("⏹ Стоп"):
-                        st.session_state.auto_play_active = False
-
-                if st.session_state.get("auto_play_active", False):
-                    speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
-                    if st.session_state.current_index < total_cycles - 1:
-                        st.session_state.current_index += 1
-                        time.sleep(speed)
-                        st.rerun()
-                    else:
-                        st.session_state.auto_play_active = False
-
-                # Получаем выбранный цикл для построения модели
                 selected_cycle_building = selected_cycle_key
                 building_length = st.session_state.get("building_length", 70.46)
                 building_width = st.session_state.get("building_width", 18.69)
@@ -926,6 +891,61 @@ if uploaded_file is not None:
                     st.plotly_chart(fig_building, use_container_width=True)
                 else:
                     st.warning("Для выбранного цикла нет данных на этажах 5, 15 или 27.")
+
+            # ---------- Раздел с формулами ----------
+            with st.expander("📐 Как строится модель (формулы и пояснения)", expanded=False):
+                st.markdown("""
+                **Построение 3D-модели деформаций здания** основано на данных накладного инклинометра, установленного на этажах 5, 15 и 27.
+
+                ### 1. Исходные данные
+                - Для каждого цикла измерений известны углы наклона по осям X и Y:  
+                  \( \alpha_{x}^{(i)} \) и \( \alpha_{y}^{(i)} \) для i-го этажа (i = 5, 15, 27).
+                - Эти углы – это **прирост** относительно нулевого цикла, скорректированный на начальный угол (\( \alpha_{0x}, \alpha_{0y} \)), задаваемый пользователем.
+
+                ### 2. Накопление смещений
+                Смещение на каждом этаже вычисляется как сумма приращений по высоте:
+
+                \[
+                M_x^{(h)} = \sum_{k} L_k \cdot \sin(\alpha_{x}^{(k)})
+                \]
+
+                \[
+                M_y^{(h)} = \sum_{k} L_k \cdot \sin(\alpha_{y}^{(k)})
+                \]
+
+                где:
+                - \( L_k \) – высота участка между соседними измеренными этажами (определяется по номерам этажей и параметру `L` – высота одного этажа);
+                - суммирование ведётся от фундамента (0-й этаж) до текущего этажа.
+
+                Для участков между этажами 0–5, 5–15, 15–27 используется линейная интерполяция угла (считаем его постоянным на каждом участке).
+
+                ### 3. Построение деформированной оси
+                Точки деформированной оси – это координаты \((M_x, M_y, H)\) для этажей 5, 15 и 27, где \( H = \text{номер этажа} \times L \).  
+                Дополнительно добавляется точка фундамента (0,0,0).  
+                Красная линия соединяет эти точки – это и есть **деформированная ось**.
+
+                ### 4. Общий крен здания
+                Вектор от фундамента до верхней точки (этаж 27) характеризует общий крен.  
+                Угол крена вычисляется как:
+
+                \[
+                \theta = \arctan\left(\frac{\sqrt{M_x^{27} + M_y^{27}}}{H_{27}}\right)
+                \]
+
+                где \( H_{27} = 27 \cdot L \) – высота здания.
+
+                ### 5. Векторы смещений
+                На каждом этаже отображается зелёный вектор от вертикальной оси (X=0, Y=0) до точки деформированной оси. Это наглядно показывает горизонтальное смещение каждого этажа.
+
+                ### 6. Каркас здания
+                Чёрный каркас строится на основе заданных пользователем размеров в плане (длина `X` и ширина `Y`).  
+                Верхняя часть каркаса смещается пропорционально смещению верхней точки деформированной оси, что создаёт иллюзию наклона всего объёма здания.
+
+                ### 7. Крен по данным осадок (опционально)
+                Если загружены и рассчитаны данные осадок фундамента, на уровне земли отображается фиолетовый вектор, показывающий направление и величину крена, вычисленного по осадкам угловых марок.
+
+                **Примечание:** все расчёты выполняются в метрах, углы переводятся в радианы через `np.radians()`.
+                """)
 
         with tab3:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
