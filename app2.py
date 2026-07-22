@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import A4
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+import logging
 
 # ------------------------------------------------------------
 # Настройки страницы
@@ -208,7 +209,6 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
         st.error("Не найдена строка с заголовками циклов в листе осадок.")
         return None
 
-    # Собираем все циклы и их столбцы с осадками
     cycle_cols = {}
     all_cycles = []
     for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
@@ -245,7 +245,6 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
 
     # Если нулевой цикл не задан – выбираем первый по дате (самый ранний)
     if zero_cycle_sett is None:
-        # Сортируем циклы по дате
         def try_parse_date(s):
             for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y-%m-%d'):
                 try:
@@ -273,7 +272,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
         st.dataframe(df_raw.head(20))
         return None
 
-    # Собираем данные по ВСЕМ маркам (для отображения) – НЕ прирост, а абсолютные осадки за цикл
+    # Собираем данные по ВСЕМ маркам (для отображения) – абсолютные осадки за цикл
     marks_abs_data = {}
     for cycle_label, col_idx in cycle_cols.items():
         marks_abs_data[cycle_label] = {}
@@ -289,21 +288,19 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
             else:
                 marks_abs_data[cycle_label][mark_str] = np.nan
 
-    # Для расчёта углов используем ПРИРОСТ осадок относительно нулевого цикла
     # Получаем осадки в нулевом цикле
     zero_marks = marks_abs_data.get(zero_cycle_sett, {})
     if not zero_marks:
         st.warning(f"Нулевой цикл {zero_cycle_sett} не найден в данных осадок. Используем первый доступный.")
-        # Берём первый цикл
         first_cycle = list(marks_abs_data.keys())[0]
         zero_marks = marks_abs_data[first_cycle]
         zero_cycle_sett = first_cycle
 
-    # Собираем приросты
+    # Собираем приросты для угловых марок
     data = []
     for cycle_label, cols in marks_abs_data.items():
         if cycle_label == zero_cycle_sett:
-            continue  # не считаем для нулевого, чтобы не было нулевых приростов
+            continue
         for mark_str, sett_val in cols.items():
             if mark_str in zero_marks and not np.isnan(zero_marks[mark_str]) and not np.isnan(sett_val):
                 delta = sett_val - zero_marks[mark_str]
@@ -674,7 +671,7 @@ if uploaded_file is not None:
         st.session_state.report_params = report_params
 
         # --- Основная область с вкладками ---
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Данные и параметры", "📈 Графики", "📥 Отчёт", "📘 Наклономер"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Данные и параметры", "📐 Визуализация крена", "📥 Отчёт", "📘 Наклономер"])
 
         with tab1:
             st.subheader("Данные наклономера")
@@ -701,6 +698,9 @@ if uploaded_file is not None:
             df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
             df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
             df_incl['αy_abs'] = df_incl['αy'] - df_incl['αy0_inc'] + alpha0_y
+            # Смещения для профиля
+            df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
+            df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
 
             cycle_labels = format_cycle_labels(df_incl, zero_cycle)
             st.session_state.cycle_labels = cycle_labels
@@ -717,7 +717,7 @@ if uploaded_file is not None:
             )
             st.session_state.selected_floors = selected_floors
 
-            # ---------- Блок осадок (ОБНОВЛЁННЫЙ) ----------
+            # ---------- Блок осадок ----------
             sett_sheets = [s for s in all_sheets if 'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
             if sett_sheets:
                 st.subheader("📐 Данные осадок")
@@ -747,69 +747,62 @@ if uploaded_file is not None:
                     L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1)
                     B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1)
 
-                    # Выбор нулевого цикла для осадок (по умолчанию – ближайший к нулевому циклу наклономера)
-                    # Получаем все циклы из осадок (предварительно)
-                    if st.button("Загрузить циклы осадок") or True:  # всегда показываем
-                        # Временно парсим только чтобы получить список циклов
-                        try:
-                            df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
-                            cycle_header_row_test = None
-                            for idx, row in df_raw_test.iterrows():
-                                row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-                                if 'Цикл' in row_str:
-                                    cycle_header_row_test = idx
+                    # Получаем список циклов осадок
+                    try:
+                        df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
+                        cycle_header_row_test = None
+                        for idx, row in df_raw_test.iterrows():
+                            row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
+                            if 'Цикл' in row_str:
+                                cycle_header_row_test = idx
+                                break
+                        all_cycles_temp = []
+                        if cycle_header_row_test is not None:
+                            for col_idx, cell in df_raw_test.iloc[cycle_header_row_test, :].items():
+                                if pd.notna(cell):
+                                    cell_str = str(cell).strip()
+                                    if 'Цикл' in cell_str:
+                                        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
+                                        if date_match:
+                                            try:
+                                                date_obj = pd.to_datetime(date_match.group(1), dayfirst=True)
+                                                cycle_label = date_obj.strftime('%Y-%m-%d')
+                                                all_cycles_temp.append(cycle_label)
+                                            except:
+                                                pass
+                        def try_parse_date(s):
+                            for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y-%m-%d'):
+                                try:
+                                    return pd.to_datetime(s, format=fmt)
+                                except:
+                                    continue
+                            return None
+                        sorted_cycles_temp = sorted(all_cycles_temp, key=lambda x: try_parse_date(x) or x)
+                        zero_dt = pd.to_datetime(zero_cycle)
+                        best_cycle = sorted_cycles_temp[0] if sorted_cycles_temp else None
+                        if sorted_cycles_temp:
+                            for cyc in sorted_cycles_temp:
+                                cyc_dt = pd.to_datetime(cyc)
+                                if cyc_dt >= zero_dt:
+                                    best_cycle = cyc
                                     break
-                            all_cycles_temp = []
-                            if cycle_header_row_test is not None:
-                                for col_idx, cell in df_raw_test.iloc[cycle_header_row_test, :].items():
-                                    if pd.notna(cell):
-                                        cell_str = str(cell).strip()
-                                        if 'Цикл' in cell_str:
-                                            date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
-                                            if date_match:
-                                                try:
-                                                    date_obj = pd.to_datetime(date_match.group(1), dayfirst=True)
-                                                    cycle_label = date_obj.strftime('%Y-%m-%d')
-                                                    all_cycles_temp.append(cycle_label)
-                                                except:
-                                                    pass
-                            # Сортируем
-                            def try_parse_date(s):
-                                for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y-%m-%d'):
-                                    try:
-                                        return pd.to_datetime(s, format=fmt)
-                                    except:
-                                        continue
-                                return None
-                            try:
-                                sorted_cycles_temp = sorted(all_cycles_temp, key=lambda x: try_parse_date(x) or x)
-                            except:
-                                sorted_cycles_temp = sorted(all_cycles_temp)
-                            # Выбираем ближайший к zero_cycle
-                            zero_dt = pd.to_datetime(zero_cycle)
-                            best_cycle = sorted_cycles_temp[0] if sorted_cycles_temp else None
-                            if sorted_cycles_temp:
-                                for cyc in sorted_cycles_temp:
-                                    cyc_dt = pd.to_datetime(cyc)
-                                    if cyc_dt >= zero_dt:
-                                        best_cycle = cyc
-                                        break
-                            # Если не нашли, берём первый
-                            if best_cycle is None and sorted_cycles_temp:
-                                best_cycle = sorted_cycles_temp[0]
-                        except:
-                            best_cycle = None
-                    else:
+                        if best_cycle is None and sorted_cycles_temp:
+                            best_cycle = sorted_cycles_temp[0]
+                    except:
                         best_cycle = None
+                        sorted_cycles_temp = []
 
-                    zero_cycle_sett = st.selectbox(
-                        "Нулевой цикл осадок (от которого считать прирост)",
-                        options=sorted_cycles_temp if 'sorted_cycles_temp' in locals() else [],
-                        index=sorted_cycles_temp.index(best_cycle) if best_cycle and 'sorted_cycles_temp' in locals() and best_cycle in sorted_cycles_temp else 0
-                    ) if 'sorted_cycles_temp' in locals() else None
+                    if sorted_cycles_temp:
+                        zero_cycle_sett = st.selectbox(
+                            "Нулевой цикл осадок (от которого считать прирост)",
+                            options=sorted_cycles_temp,
+                            index=sorted_cycles_temp.index(best_cycle) if best_cycle in sorted_cycles_temp else 0
+                        )
+                    else:
+                        zero_cycle_sett = None
 
                     if st.button("Рассчитать углы по осадкам"):
-                        if len(corner_marks) == 4:
+                        if len(corner_marks) == 4 and zero_cycle_sett is not None:
                             result = parse_settlement_data(
                                 file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett, mark_col=mark_col,
                                 zero_cycle_sett=zero_cycle_sett
@@ -828,275 +821,171 @@ if uploaded_file is not None:
                             else:
                                 st.error("Не удалось рассчитать углы. Проверьте правильность введённых данных.")
                         else:
-                            st.error("Укажите 4 угловые марки.")
+                            st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
-                # Если есть рассчитанные данные, показываем таблицу и возможность смены марок
+                # Если есть рассчитанные данные, показываем таблицу
                 if 'df_sett_angles' in st.session_state and st.session_state.df_sett_angles is not None:
                     df_angles = st.session_state.df_sett_angles
-                    marks_data = st.session_state.marks_data
-                    corner_marks = st.session_state.corner_marks
-                    L_sett = st.session_state.L_sett
-                    B_sett = st.session_state.B_sett
-                    sheet = st.session_state.sett_sheet
-                    zero_cycle_sett = st.session_state.zero_cycle_sett
-
-                    st.subheader("📊 Осадки марок и углы крена")
-
-                    # ---- Таблица осадок всех марок (абсолютные осадки за цикл) ----
-                    if marks_data:
-                        # Определяем последний цикл
-                        last_cycle = max(marks_data.keys()) if marks_data else None
-                        if last_cycle:
-                            df_marks = pd.DataFrame({
-                                'Марка': list(marks_data[last_cycle].keys()),
-                                'Осадка, мм': list(marks_data[last_cycle].values())
-                            })
-                            def highlight_corners(row):
-                                if str(row['Марка']) in [str(m) for m in corner_marks]:
-                                    return ['background-color: #ffff99'] * len(row)
-                                else:
-                                    return [''] * len(row)
-                            st.dataframe(df_marks.style.apply(highlight_corners, axis=1), use_container_width=True)
-                            st.caption(f"🟡 Жёлтым выделены выбранные угловые марки. Нулевой цикл осадок: {zero_cycle_sett}")
-
-                    # ---- Мультиселект для смены марок ----
-                    all_marks = list(marks_data[last_cycle].keys()) if marks_data and last_cycle else []
-                    if all_marks:
-                        st.subheader("🔄 Сменить угловые марки")
-                        new_marks = st.multiselect(
-                            "Выберите 4 марки в порядке: нижний левый, нижний правый, верхний левый, верхний правый",
-                            options=all_marks,
-                            default=[str(m) for m in corner_marks],
-                            key="new_corner_marks"
-                        )
-                        if len(new_marks) == 4 and st.button("Пересчитать с новыми марками"):
-                            new_marks_parsed = []
-                            for m in new_marks:
-                                try:
-                                    new_marks_parsed.append(int(m))
-                                except ValueError:
-                                    new_marks_parsed.append(m)
-                            result = parse_settlement_data(
-                                file_bytes, sheet, new_marks_parsed, L_sett, B_sett, mark_col=mark_col,
-                                zero_cycle_sett=zero_cycle_sett
-                            )
-                            if result is not None:
-                                df_angles_new, marks_data_new, _ = result
-                                st.session_state.df_sett_angles = df_angles_new
-                                st.session_state.marks_data = marks_data_new
-                                st.session_state.corner_marks = new_marks_parsed
-                                st.success("Углы пересчитаны!")
-                                st.rerun()
-                            else:
-                                st.error("Ошибка пересчёта. Проверьте марки.")
-
-                    # ---- Отображение углов ----
-                    st.subheader("📈 Углы наклона по осадкам (прирост относительно нулевого цикла)")
                     st.dataframe(df_angles, use_container_width=True)
-            else:
-                st.info("Листов с осадками не найдено.")
 
         with tab2:
-            st.subheader("📈 Изменение абсолютных углов наклона по этажам")
+            st.subheader("📐 Визуализация крена здания")
             st.markdown("""
-            **ℹ️ Пояснение:** На графике показаны абсолютные углы наклона (в градусах) для выбранных этажей по осям X и Y.  
-            - **Сплошная линия** – угол по оси X (αx).  
-            - **Пунктирная линия** – угол по оси Y (αy).  
-            - Каждый цвет соответствует отдельному этажу.  
-            - Аннотации показывают максимальные значения.
+            **ℹ️ Пояснение:** На этой странице представлены наглядные графики, показывающие крен здания:
+            - **Схема фундамента** – вид сверху с вектором смещения (по данным осадок).
+            - **Столбчатая диаграмма осадок** – профиль осадок по маркам для выбранного цикла.
+            - **Сравнение углов** – наклономер vs осадки.
+            - **Профиль смещений** – по этажам (данные наклономера).
             """)
 
-            selected_floors = st.session_state.get('selected_floors', sorted(df_incl['Этаж'].unique()))
-            if not selected_floors:
-                st.warning("Не выбрано ни одного этажа. Вернитесь на вкладку 'Данные и параметры' и выберите этажи.")
-            else:
-                df_filtered = df_incl[df_incl['Этаж'].isin(selected_floors)]
+            # Выбор цикла для визуализации
+            cycles = sorted(df_incl['Цикл'].unique())
+            selected_cycle = st.selectbox("Выберите цикл для визуализации", cycles, index=len(cycles)-1, key="vis_cycle")
+            cycle_label = st.session_state.get('cycle_labels', {}).get(selected_cycle, selected_cycle)
 
-                if df_filtered.empty:
-                    st.warning("Нет данных для выбранных этажей.")
-                else:
-                    fig1 = go.Figure()
-                    colors = px.colors.qualitative.Plotly
-                    cycle_labels = st.session_state.get('cycle_labels', {})
-
-                    for i, floor in enumerate(sorted(selected_floors)):
-                        floor_df = df_filtered[df_filtered['Этаж'] == floor].sort_values('Цикл')
-                        color = colors[i % len(colors)]
-                        x_labels = [cycle_labels.get(c, c) for c in floor_df['Цикл']]
-
-                        fig1.add_trace(go.Scatter(
-                            x=x_labels,
-                            y=floor_df['αx_abs'],
-                            mode='lines+markers',
-                            name=f'Этаж {floor} αx',
-                            line=dict(color=color, width=2),
-                            marker=dict(size=8, symbol='circle'),
-                            legendgroup=f'floor_{floor}',
-                            legendgrouptitle_text=f'Этаж {floor}'
-                        ))
-                        fig1.add_trace(go.Scatter(
-                            x=x_labels,
-                            y=floor_df['αy_abs'],
-                            mode='lines+markers',
-                            name=f'Этаж {floor} αy',
-                            line=dict(color=color, width=2, dash='dot'),
-                            marker=dict(size=8, symbol='square'),
-                            legendgroup=f'floor_{floor}',
-                            showlegend=False
-                        ))
-
-                    if not df_filtered.empty:
-                        max_x = df_filtered.loc[df_filtered['αx_abs'].idxmax()]
-                        max_y = df_filtered.loc[df_filtered['αy_abs'].idxmax()]
-                        fig1.add_annotation(
-                            x=cycle_labels.get(max_x['Цикл'], max_x['Цикл']),
-                            y=max_x['αx_abs'],
-                            text=f"max αx = {max_x['αx_abs']:.3f}° (эт.{max_x['Этаж']})",
-                            showarrow=True, arrowhead=2, ax=0, ay=-40,
-                            font=dict(color='darkblue', size=11)
-                        )
-                        fig1.add_annotation(
-                            x=cycle_labels.get(max_y['Цикл'], max_y['Цикл']),
-                            y=max_y['αy_abs'],
-                            text=f"max αy = {max_y['αy_abs']:.3f}° (эт.{max_y['Этаж']})",
-                            showarrow=True, arrowhead=2, ax=0, ay=40,
-                            font=dict(color='darkred', size=11)
-                        )
-
-                    fig1.update_layout(
-                        title="Абсолютные углы наклона по осям X и Y",
-                        xaxis_title="Цикл",
-                        yaxis_title="Угол, °",
-                        template="plotly_white",
-                        hovermode="x unified",
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=1.02,
-                            xanchor="right",
-                            x=1,
-                            title="",
-                            font=dict(size=10)
-                        ),
-                        margin=dict(l=40, r=40, t=80, b=40)
-                    )
-                    st.plotly_chart(fig1, use_container_width=True)
-
-            # ---- Итоговый крен здания (средний по всем этажам) ----
-            st.subheader("📊 Итоговый крен здания (средний по всем этажам)")
-            st.markdown("""
-            **ℹ️ Пояснение:** Этот график показывает обобщённый угол наклона всего здания, рассчитанный как **среднее арифметическое** абсолютных углов αx и αy по **всем этажам** для каждого цикла.  
-            - **Синяя линия** – средний угол по оси X.  
-            - **Красная линия** – средний угол по оси Y.  
-            - Среднее значение даёт интегральную оценку крена, сглаживая локальные отклонения отдельных этажей.
-            """)
-
-            kren_df = df_incl.groupby('Цикл', as_index=False)[['αx_abs', 'αy_abs']].mean()
-            kren_df = kren_df.sort_values('Цикл')
-
-            if not kren_df.empty:
-                fig4 = go.Figure()
-                cycle_labels = st.session_state.get('cycle_labels', {})
-                x_labels = [cycle_labels.get(c, c) for c in kren_df['Цикл']]
-                fig4.add_trace(go.Scatter(
-                    x=x_labels,
-                    y=kren_df['αx_abs'],
-                    mode='lines+markers',
-                    name='αx_средний',
-                    line=dict(color='blue', width=2),
-                    marker=dict(size=8)
-                ))
-                fig4.add_trace(go.Scatter(
-                    x=x_labels,
-                    y=kren_df['αy_abs'],
-                    mode='lines+markers',
-                    name='αy_средний',
-                    line=dict(color='red', width=2, dash='dot'),
-                    marker=dict(size=8, symbol='square')
-                ))
-                fig4.update_layout(
-                    title="Изменение среднего угла наклона здания по всем этажам",
-                    xaxis_title="Цикл",
-                    yaxis_title="Угол, °",
-                    template="plotly_white",
-                    hovermode="x unified",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig4, use_container_width=True)
-                st.dataframe(
-                    kren_df[['Цикл', 'αx_abs', 'αy_abs']]
-                    .rename(columns={'αx_abs': 'αx_ср, °', 'αy_abs': 'αy_ср, °'})
-                    .assign(Цикл=lambda d: d['Цикл'].map(cycle_labels))
-                )
-            else:
-                st.warning("Нет данных для расчёта среднего крена.")
-
-            # ---- Сравнение с осадками (если есть) ----
+            # --- 1. Схема фундамента с вектором крена (по осадкам) ---
             df_sett_angles = st.session_state.get('df_sett_angles', None)
             if df_sett_angles is not None and not df_sett_angles.empty:
-                st.subheader("📊 Сравнение итогового крена здания с осадками")
-                st.markdown("""
-                **ℹ️ Пояснение:** Сравнение среднего угла наклона по наклономеру (все этажи) с углами, рассчитанными по осадкам (a и b).  
-                - **Сплошные линии** – наклономер (среднее по этажам).  
-                - **Пунктирные линии** – осадки.  
-                - Совпадение линий подтверждает достоверность измерений.
-                """)
+                sett_row = df_sett_angles[df_sett_angles['Цикл'] == selected_cycle]
+                if not sett_row.empty:
+                    a = sett_row['a_мм_м'].values[0]
+                    b = sett_row['b_мм_м'].values[0]
+                    # Масштабируем вектор для наглядности (умножаем на 1000, чтобы было видно)
+                    scale = 1000
+                    ax_vis = a * scale
+                    ay_vis = b * scale
+
+                    fig_sett = go.Figure()
+                    # Рисуем фундамент (прямоугольник)
+                    fig_sett.add_shape(
+                        type="rect",
+                        x0=-0.5, y0=-0.5, x1=0.5, y1=0.5,
+                        line=dict(color="black", width=2),
+                        fillcolor="lightblue", opacity=0.3
+                    )
+                    # Рисуем вектор смещения (из центра)
+                    fig_sett.add_annotation(
+                        x=ax_vis, y=ay_vis,
+                        text=f"a={a:.2f} мм/м, b={b:.2f} мм/м",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=0, ay=-30,
+                        font=dict(size=12, color="red")
+                    )
+                    fig_sett.add_trace(go.Scatter(
+                        x=[0, ax_vis], y=[0, ay_vis],
+                        mode='lines+markers',
+                        line=dict(color='red', width=3),
+                        marker=dict(size=10, color='red'),
+                        name='Вектор крена'
+                    ))
+                    fig_sett.update_layout(
+                        title=f"Схема фундамента с вектором крена (цикл {cycle_label})",
+                        xaxis_title="Смещение по оси X (усл. ед.)",
+                        yaxis_title="Смещение по оси Y (усл. ед.)",
+                        xaxis=dict(scaleanchor="y", scaleratio=1),
+                        yaxis=dict(scaleanchor="x", scaleratio=1),
+                        height=500,
+                        template="plotly_white"
+                    )
+                    st.plotly_chart(fig_sett, use_container_width=True)
+
+                    # Текстовый вывод углов
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Угол a (по оси X)", f"{a:.3f} мм/м")
+                    with col2:
+                        st.metric("Угол b (по оси Y)", f"{b:.3f} мм/м")
+
+            # --- 2. Столбчатая диаграмма осадок ---
+            marks_data = st.session_state.get('marks_data', {})
+            if marks_data and selected_cycle in marks_data:
+                df_marks = pd.DataFrame({
+                    'Марка': list(marks_data[selected_cycle].keys()),
+                    'Осадка, мм': list(marks_data[selected_cycle].values())
+                })
+                # Сортируем по убыванию осадки
+                df_marks = df_marks.sort_values('Осадка, мм', ascending=False)
+                fig_bar = px.bar(
+                    df_marks, x='Марка', y='Осадка, мм',
+                    title=f"Осадки марок (цикл {cycle_label})",
+                    color='Осадка, мм',
+                    color_continuous_scale='RdYlGn_r'
+                )
+                fig_bar.update_layout(template="plotly_white")
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            # --- 3. Сравнение углов ---
+            if df_sett_angles is not None and not df_sett_angles.empty:
+                # Получаем средний крен по наклономеру для выбранного цикла
+                kren_df = df_incl.groupby('Цикл', as_index=False)[['αx_abs', 'αy_abs']].mean()
                 merged = pd.merge(kren_df, df_sett_angles, on='Цикл', how='inner')
-                if merged.empty:
-                    st.warning("Нет общих циклов для сравнения с осадками. Показываем последние значения.")
-                    last_kren = kren_df.iloc[-1] if not kren_df.empty else None
-                    last_sett = df_sett_angles.iloc[-1] if not df_sett_angles.empty else None
-                    if last_kren is not None and last_sett is not None:
-                        st.write("**Последний цикл (средний крен):**")
-                        st.dataframe(last_kren[['Цикл', 'αx_abs', 'αy_abs']].to_frame().T)
-                        st.write("**Последний цикл осадок:**")
-                        st.dataframe(last_sett[['Цикл', 'a_град', 'b_град']].to_frame().T)
-                else:
-                    cycle_labels = st.session_state.get('cycle_labels', {})
-                    merged['Цикл_метка'] = merged['Цикл'].map(cycle_labels)
-                    fig2 = go.Figure()
-                    fig2.add_trace(go.Scatter(
-                        x=merged['Цикл_метка'],
+                if not merged.empty:
+                    fig_comp = go.Figure()
+                    fig_comp.add_trace(go.Scatter(
+                        x=merged['Цикл'],
                         y=merged['αx_abs'],
                         mode='lines+markers',
                         name='αx_ср (наклономер)',
-                        line=dict(color='#1f77b4', width=2),
-                        marker=dict(size=8)
+                        line=dict(color='blue', width=2)
                     ))
-                    fig2.add_trace(go.Scatter(
-                        x=merged['Цикл_метка'],
+                    fig_comp.add_trace(go.Scatter(
+                        x=merged['Цикл'],
                         y=merged['a_град'],
                         mode='lines+markers',
                         name='a (осадки)',
-                        line=dict(color='#ff7f0e', width=2, dash='dash'),
-                        marker=dict(size=8, symbol='diamond')
+                        line=dict(color='red', width=2, dash='dash')
                     ))
-                    fig2.add_trace(go.Scatter(
-                        x=merged['Цикл_метка'],
+                    fig_comp.add_trace(go.Scatter(
+                        x=merged['Цикл'],
                         y=merged['αy_abs'],
                         mode='lines+markers',
                         name='αy_ср (наклономер)',
-                        line=dict(color='#2ca02c', width=2),
-                        marker=dict(size=8)
+                        line=dict(color='green', width=2)
                     ))
-                    fig2.add_trace(go.Scatter(
-                        x=merged['Цикл_метка'],
+                    fig_comp.add_trace(go.Scatter(
+                        x=merged['Цикл'],
                         y=merged['b_град'],
                         mode='lines+markers',
                         name='b (осадки)',
-                        line=dict(color='#d62728', width=2, dash='dash'),
-                        marker=dict(size=8, symbol='diamond')
+                        line=dict(color='orange', width=2, dash='dash')
                     ))
-
-                    fig2.update_layout(
-                        title="Сравнение среднего крена здания с осадками",
+                    fig_comp.update_layout(
+                        title="Сравнение углов крена (наклономер vs осадки)",
                         xaxis_title="Цикл",
                         yaxis_title="Угол, °",
                         template="plotly_white",
-                        hovermode="x unified",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                     )
-                    st.plotly_chart(fig2, use_container_width=True)
+                    st.plotly_chart(fig_comp, use_container_width=True)
+
+            # --- 4. Профиль смещений по этажам ---
+            st.subheader("📊 Профиль смещений по этажам (наклономер)")
+            profile = df_incl[df_incl['Цикл'] == selected_cycle].sort_values('Этаж')
+            if not profile.empty:
+                fig_prof = go.Figure()
+                fig_prof.add_trace(go.Scatter(
+                    x=profile['Смещение X'],
+                    y=profile['Этаж'],
+                    mode='lines+markers',
+                    name='Смещение X',
+                    line=dict(color='blue', width=2)
+                ))
+                fig_prof.add_trace(go.Scatter(
+                    x=profile['Смещение Y'],
+                    y=profile['Этаж'],
+                    mode='lines+markers',
+                    name='Смещение Y',
+                    line=dict(color='red', width=2, dash='dot')
+                ))
+                fig_prof.update_layout(
+                    title=f"Профиль смещений (цикл {cycle_label})",
+                    xaxis_title="Смещение, м",
+                    yaxis_title="Этаж",
+                    yaxis=dict(autorange="reversed"),
+                    template="plotly_white"
+                )
+                st.plotly_chart(fig_prof, use_container_width=True)
 
         with tab3:
             st.subheader("📥 Скачать отчёт")
