@@ -31,7 +31,7 @@ if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА
+# ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (с сохранением полных названий циклов)
 # ------------------------------------------------------------
 def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, search_start=None, search_end=None):
     try:
@@ -44,34 +44,46 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     total_cols = len(df_raw.columns)
 
     cycle_header_row = None
+    cycle_full_names = []  # список полных названий циклов в порядке следования в таблице
+
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
         if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
             cycle_header_row = idx
+            # Извлекаем все полные названия из строки заголовка
+            for col in range(1, total_cols):
+                cell = df_raw.iloc[cycle_header_row, col]
+                if pd.notna(cell):
+                    cell_str = str(cell).strip()
+                    # Ищем "Цикл ... дата" или "Цикл "нулевой" ... дата"
+                    # Просто берем текст ячейки, если там есть "Цикл"
+                    if 'Цикл' in cell_str:
+                        # чистим лишние пробелы
+                        clean = ' '.join(cell_str.split())
+                        cycle_full_names.append(clean)
             break
 
     if cycle_header_row is None:
         st.warning("Не найдена строка с заголовками циклов. Будем использовать порядковые номера.")
         cycle_labels = None
+        cycle_full_names = None
     else:
-        cycle_labels = []
-        for col in range(1, total_cols):
-            cell = df_raw.iloc[cycle_header_row, col]
-            if pd.notna(cell):
-                cell_str = str(cell).strip()
-                match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
-                if match:
-                    try:
-                        date_obj = pd.to_datetime(match.group(1), dayfirst=True)
-                        cycle_labels.append(date_obj.strftime('%Y-%m-%d'))
-                    except:
-                        cycle_labels.append(cell_str)
-                else:
-                    cycle_labels.append(cell_str)
+        cycle_labels = []  # даты в формате YYYY-MM-DD
+        for name in cycle_full_names:
+            match = re.search(r'(\d{2}\.\d{2}\.\d{4})', name)
+            if match:
+                try:
+                    date_obj = pd.to_datetime(match.group(1), dayfirst=True)
+                    cycle_labels.append(date_obj.strftime('%Y-%m-%d'))
+                except:
+                    cycle_labels.append(name)
             else:
-                cycle_labels.append("")
-        cycle_labels = [c for c in cycle_labels if c]
+                cycle_labels.append(name)
+        # если количество дат не совпадает с количеством названий, используем названия как есть
+        if len(cycle_labels) != len(cycle_full_names):
+            cycle_labels = cycle_full_names.copy()
 
+    # Определяем диапазон строк для поиска этажей
     if manual_floor_rows is not None:
         floor_rows = {}
         for floor, row_idx in manual_floor_rows.items():
@@ -162,9 +174,11 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
 
     if cycle_labels is None:
         cycle_labels = [f"Цикл {i+1}" for i in range(max_pairs)]
+        cycle_full_names = cycle_labels.copy()
     elif len(cycle_labels) < max_pairs:
         for i in range(len(cycle_labels), max_pairs):
             cycle_labels.append(f"Цикл {i+1}")
+            cycle_full_names.append(f"Цикл {i+1}")
 
     data = []
     for floor_idx in floor_rows_sorted:
@@ -195,7 +209,8 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
         for i, (ax, ay) in enumerate(pairs):
             if i < len(cycle_labels):
                 data.append({
-                    'Цикл': cycle_labels[i],
+                    'Цикл': cycle_labels[i],          # ключ-дата (или номер)
+                    'Цикл_полное': cycle_full_names[i] if cycle_full_names and i < len(cycle_full_names) else cycle_labels[i],
                     'Этаж': floor_val,
                     'αx': ax,
                     'αy': ay
@@ -207,6 +222,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
 
     df = pd.DataFrame(data)
     df['Цикл'] = df['Цикл'].astype(str)
+    df['Цикл_полное'] = df['Цикл_полное'].astype(str)
     df['Этаж'] = df['Этаж'].astype(int)
     df['αx'] = pd.to_numeric(df['αx'], errors='coerce')
     df['αy'] = pd.to_numeric(df['αy'], errors='coerce')
@@ -405,7 +421,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
-# 3D-МОДЕЛЬ ЗДАНИЯ с легендой справа
+# 3D-МОДЕЛЬ ЗДАНИЯ (легенда справа, вертикально)
 # ------------------------------------------------------------
 def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width, vertical_scale=1.0, df_sett_angles=None):
     floors_needed = [5, 15, 27]
@@ -542,7 +558,6 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
             z=[0, top_z],
             mode='lines',
             line=dict(color='black', width=2),
-            name='Каркас здания',
             showlegend=False
         ))
     for z_level, (x_shift, y_shift) in [(0, (0,0)), (top_z, (top_x, top_y))]:
@@ -557,7 +572,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
                 showlegend=False
             ))
 
-    # Настройка сцены с легендой справа
+    # Легенда — справа в столбик
     fig.update_layout(
         title=f"3D-модель здания – цикл {selected_cycle} (верт. масштаб {vertical_scale:.1f})",
         scene=dict(
@@ -571,14 +586,32 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         height=750,
         template="plotly_white",
         legend=dict(
-            orientation="v",          # вертикальная ориентация
+            orientation="v",          # вертикально
+            yanchor="top",            # привязка к верхнему краю
+            y=1,                      # верхняя граница
             xanchor="left",           # привязка к левому краю легенды
-            x=1.02,                   # смещение вправо от графика
-            y=1,                      # привязка к верхнему краю
-            yanchor="top"             # верхняя часть легенды на уровне y=1
+            x=1.02                    # отступ справа от графика
         )
     )
     return fig
+
+# ------------------------------------------------------------
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: формирование списка для выпадающих списков
+# ------------------------------------------------------------
+def get_cycle_display_options(df_incl):
+    """
+    Возвращает словарь: ключ (дата/номер) -> полное название для отображения
+    """
+    # Берём уникальные пары (Цикл, Цикл_полное)
+    unique = df_incl[['Цикл', 'Цикл_полное']].drop_duplicates()
+    # Сортируем по дате, если возможно
+    def try_parse(s):
+        try:
+            return pd.to_datetime(s)
+        except:
+            return s
+    unique_sorted = unique.sort_values('Цикл', key=lambda x: x.map(try_parse))
+    return dict(zip(unique_sorted['Цикл'], unique_sorted['Цикл_полное']))
 
 # ------------------------------------------------------------
 # ОСНОВНАЯ ЛОГИКА ПРИЛОЖЕНИЯ
@@ -679,19 +712,32 @@ if uploaded_file is not None:
             "📘 Наклономер"
         ])
 
+        # Получаем словарь для отображения циклов
+        cycle_display_map = get_cycle_display_options(df_incl)
+        cycle_keys = sorted(cycle_display_map.keys())  # список ключей (дат)
+
         with tab1:
             st.subheader("Данные наклономера")
-            st.dataframe(df_incl, use_container_width=True)
+            # В таблице показываем полное название цикла
+            df_display = df_incl.copy()
+            df_display['Цикл'] = df_display['Цикл'].map(cycle_display_map)
+            st.dataframe(df_display, use_container_width=True)
 
-            cycles = sorted(df_incl['Цикл'].unique())
-            if len(cycles) == 0:
+            if len(cycle_keys) == 0:
                 st.error("Нет циклов в данных наклономера.")
                 st.stop()
 
             st.subheader("⚙️ Параметры расчёта")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                zero_cycle = st.selectbox("Нулевой цикл", cycles, index=0)
+                # Выпадающий список с полными названиями
+                zero_cycle_display = st.selectbox(
+                    "Нулевой цикл",
+                    options=[cycle_display_map[k] for k in cycle_keys],
+                    index=0
+                )
+                # Находим соответствующий ключ
+                zero_cycle = [k for k, v in cycle_display_map.items() if v == zero_cycle_display][0]
             with col2:
                 alpha0_x = st.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
             with col3:
@@ -743,6 +789,7 @@ if uploaded_file is not None:
                     L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
                     B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
 
+                    # Получаем список циклов осадок
                     try:
                         df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
                         cycle_header_row_test = None
@@ -814,7 +861,8 @@ if uploaded_file is not None:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
                 if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
-                    st.dataframe(st.session_state.res_df_sett_angles, use_container_width=True)
+                    df_angles = st.session_state.res_df_sett_angles
+                    st.dataframe(df_angles, use_container_width=True)
 
         with tab2:
             st.subheader("🏢 3D-модель здания с креном и наклономерами")
@@ -829,20 +877,28 @@ if uploaded_file is not None:
             - **Чёрный каркас** – контур здания с наклоном.
             """)
 
-            cycles_building = sorted(df_incl['Цикл'].unique())
-            total_cycles = len(cycles_building)
+            # Список циклов для слайдера и выбора
+            # Используем ключи (даты) для слайдера
+            total_cycles = len(cycle_keys)
 
             if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                 st.session_state.current_index = total_cycles - 1
 
-            current_idx = st.slider(
+            # Отображаем полные названия в слайдере (через формат)
+            # Для слайдера используем индексы, а метки показываем через format_func
+            selected_index = st.slider(
                 "Выбор цикла",
                 min_value=0,
                 max_value=total_cycles-1,
                 value=st.session_state.current_index,
-                step=1
+                step=1,
+                format="%d",
+                help="Перетащите для выбора цикла"
             )
-            st.session_state.current_index = current_idx
+            st.session_state.current_index = selected_index
+            selected_cycle_key = cycle_keys[selected_index]
+            # Отображаем полное название выбранного цикла
+            st.caption(f"**Текущий цикл:** {cycle_display_map[selected_cycle_key]}")
 
             col1, col2 = st.columns(2)
             with col1:
@@ -861,7 +917,8 @@ if uploaded_file is not None:
                 else:
                     st.session_state.auto_play_active = False
 
-            selected_cycle_building = cycles_building[st.session_state.current_index]
+            # Получаем выбранный цикл для построения модели
+            selected_cycle_building = selected_cycle_key
             building_length = st.session_state.get("building_length", 70.46)
             building_width = st.session_state.get("building_width", 18.69)
             vertical_scale = st.session_state.get("vertical_scale", 1.0)
