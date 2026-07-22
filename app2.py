@@ -32,6 +32,8 @@ if 'building_width' not in st.session_state:
     st.session_state.building_width = 18.69
 if 'auto_play_active' not in st.session_state:
     st.session_state.auto_play_active = False
+if 'current_index' not in st.session_state:
+    st.session_state.current_index = 0  # будет установлен позже
 if 'coord_dict' not in st.session_state:
     L_st = 70.46
     B_st = 18.69
@@ -766,7 +768,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
         x=[0, top_x], y=[0, top_y], z=[0, top_z],
         mode='lines+markers',
         line=dict(color='orange', width=6),
-        marker=dict(size=8, color='orange', symbol='diamond'),  # исправлено: вместо 'arrow'
+        marker=dict(size=8, color='orange', symbol='diamond'),
         name='Общий крен здания'
     ))
     # аннотация с углом крена
@@ -793,7 +795,7 @@ def plot_building_3d(df_incl, selected_cycle, L, building_length, building_width
                 x=[0, dx_os], y=[0, dy_os], z=[0, 0],
                 mode='lines+markers',
                 line=dict(color='purple', width=5, dash='dash'),
-                marker=dict(size=10, color='purple', symbol='diamond'),  # исправлено
+                marker=dict(size=10, color='purple', symbol='diamond'),
                 name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
             ))
 
@@ -1377,7 +1379,7 @@ if uploaded_file is not None:
                                         z=[0, 0],
                                         mode='lines+markers',
                                         line=dict(color='red', width=6),
-                                        marker=dict(size=8, color='red', symbol='diamond'),  # исправлено
+                                        marker=dict(size=8, color='red', symbol='diamond'),
                                         name='Вектор крена'
                                     ))
                                     fig_3d.add_trace(go.Scatter3d(
@@ -1422,6 +1424,10 @@ if uploaded_file is not None:
             cycles_building = sorted(df_incl['Цикл'].unique())
             total_cycles = len(cycles_building)
 
+            # инициализируем текущий индекс, если ещё не задан или вышел за пределы
+            if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
+                st.session_state.current_index = total_cycles - 1
+
             # Управление анимацией
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
@@ -1429,10 +1435,12 @@ if uploaded_file is not None:
                     "Выбор цикла",
                     min_value=0,
                     max_value=total_cycles-1,
-                    value=total_cycles-1,
+                    value=st.session_state.current_index,
                     step=1,
-                    key="building_slider"
+                    key=None  # без ключа – можно менять через session_state
                 )
+                # синхронизируем текущий индекс с положением слайдера
+                st.session_state.current_index = selected_index
             with col2:
                 if st.button("▶ Воспроизвести"):
                     st.session_state.auto_play_active = True
@@ -1440,17 +1448,17 @@ if uploaded_file is not None:
                 if st.button("⏹ Стоп"):
                     st.session_state.auto_play_active = False
 
-            # Дополнительная настройка скорости анимации
+            # Настройка скорости анимации
             if st.session_state.get("auto_play_active", False):
                 speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
-                if selected_index < total_cycles - 1:
-                    st.session_state.building_slider = selected_index + 1
+                if st.session_state.current_index < total_cycles - 1:
+                    st.session_state.current_index += 1
                     time.sleep(speed)
                     st.rerun()
                 else:
                     st.session_state.auto_play_active = False
 
-            selected_cycle_building = cycles_building[selected_index]
+            selected_cycle_building = cycles_building[st.session_state.current_index]
             building_length = st.session_state.get("building_length", 70.46)
             building_width = st.session_state.get("building_width", 18.69)
             df_sett_angles = st.session_state.get("res_df_sett_angles", None)
