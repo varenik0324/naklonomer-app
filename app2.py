@@ -27,6 +27,8 @@ if 'auto_play_active' not in st.session_state:
     st.session_state.auto_play_active = False
 if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
+if 'building_slider' not in st.session_state:
+    st.session_state.building_slider = 0
 
 # ------------------------------------------------------------
 # ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА (улучшенная версия)
@@ -650,8 +652,9 @@ if uploaded_file is not None:
 
         # --- Боковая панель: размеры здания для 3D ---
         st.sidebar.subheader("Размеры здания для 3D-модели")
+        # Переименовали "Длина" на "Высота" по просьбе пользователя
         st.session_state.building_length = st.sidebar.number_input(
-            "Длина здания, м",
+            "Высота здания, м",
             value=st.session_state.get("building_length", 70.46),
             step=0.1,
             key="building_length_input"
@@ -828,31 +831,31 @@ if uploaded_file is not None:
             if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                 st.session_state.current_index = total_cycles - 1
 
-            # Управление анимацией
-            col1, col2, col3 = st.columns([3, 1, 1])
+            # Слайдер с ключом для синхронизации
+            current_idx = st.slider(
+                "Выбор цикла",
+                min_value=0,
+                max_value=total_cycles-1,
+                value=st.session_state.current_index,
+                step=1,
+                key="building_slider"
+            )
+            st.session_state.current_index = current_idx
+
+            col1, col2 = st.columns(2)
             with col1:
-                # Используем слайдер с ключом для синхронизации
-                current_idx = st.slider(
-                    "Выбор цикла",
-                    min_value=0,
-                    max_value=total_cycles-1,
-                    value=st.session_state.current_index,
-                    step=1,
-                    key="building_slider"
-                )
-                st.session_state.current_index = current_idx
-            with col2:
                 if st.button("▶ Воспроизвести"):
                     st.session_state.auto_play_active = True
-            with col3:
+            with col2:
                 if st.button("⏹ Стоп"):
                     st.session_state.auto_play_active = False
 
-            # Логика автовоспроизведения
             if st.session_state.get("auto_play_active", False):
                 speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
                 if st.session_state.current_index < total_cycles - 1:
                     st.session_state.current_index += 1
+                    # Обновляем слайдер через session_state
+                    st.session_state.building_slider = st.session_state.current_index
                     time.sleep(speed)
                     st.rerun()
                 else:
