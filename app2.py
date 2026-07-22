@@ -41,7 +41,7 @@ if 'current_index' not in st.session_state:
 # ------------------------------------------------------------
 # Вспомогательные функции (кэшируемые)
 # ------------------------------------------------------------
-@st.cache_data
+@st.cache_resource  # Используем cache_resource для несериализуемого объекта ExcelFile
 def load_excel_file(file_bytes: bytes) -> pd.ExcelFile:
     """Загружает Excel-файл из байтов и возвращает ExcelFile объект."""
     return pd.ExcelFile(io.BytesIO(file_bytes))
