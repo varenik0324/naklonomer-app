@@ -828,17 +828,19 @@ if uploaded_file is not None:
             if 'current_index' not in st.session_state or st.session_state.current_index >= total_cycles:
                 st.session_state.current_index = total_cycles - 1
 
+            # Управление анимацией
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
-                selected_index = st.slider(
+                # Используем слайдер с ключом для синхронизации
+                current_idx = st.slider(
                     "Выбор цикла",
                     min_value=0,
                     max_value=total_cycles-1,
                     value=st.session_state.current_index,
                     step=1,
-                    key=None
+                    key="building_slider"
                 )
-                st.session_state.current_index = selected_index
+                st.session_state.current_index = current_idx
             with col2:
                 if st.button("▶ Воспроизвести"):
                     st.session_state.auto_play_active = True
@@ -846,6 +848,7 @@ if uploaded_file is not None:
                 if st.button("⏹ Стоп"):
                     st.session_state.auto_play_active = False
 
+            # Логика автовоспроизведения
             if st.session_state.get("auto_play_active", False):
                 speed = st.slider("Скорость (сек между кадрами)", 0.5, 3.0, 1.0, 0.5, key="speed_slider")
                 if st.session_state.current_index < total_cycles - 1:
