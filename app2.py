@@ -5,30 +5,23 @@ import plotly.graph_objects as go
 import plotly.express as px
 import io
 import re
-import traceback
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-import logging
-import requests
 
-# ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8538186715:AAG7XsBxp6TAy2lalWQ6_KkBkrUIEZCqxuw"  # ЗАМЕНИ
-CHAT_ID = "1278271780"
-logging.basicConfig(filename='app_errors.log', level=logging.ERROR)
-
-def send_telegram(message):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": f"📩 {message}", "parse_mode": "HTML"}
-        r = requests.post(url, json=payload, timeout=5)
-        return r.status_code == 200
-    except Exception as e:
-        logging.error(f"Telegram: {e}")
-        return False
+# ------------------------------------------------------------
+# Настройки страницы
+# ------------------------------------------------------------
+st.set_page_config(
+    page_title="Анализ наклономера + осадки",
+    page_icon="📐",
+    layout="wide"
+)
+st.title("📐 Анализ данных накладного инклинометра и осадок фундамента")
+st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики и сформирует отчёты.")
 
 # ------------------------------------------------------------
 # ПАРСИНГ ДАННЫХ НАКЛОНОМЕРА
@@ -200,7 +193,7 @@ def parse_inclinometer_data(file_bytes, sheet_name, manual_floor_rows=None, sear
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ДАННЫХ ОСАДОК
+# ПАРСИНГ ДАННЫХ ОСАДОК (возвращает кортеж: df_angles, marks_data)
 # ------------------------------------------------------------
 def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
@@ -261,6 +254,23 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
         st.dataframe(df_raw.head(20))
         return None
 
+    # Собираем данные по ВСЕМ маркам (для отображения)
+    marks_data = {}
+    for cycle_label, col_idx in cycle_cols.items():
+        marks_data[cycle_label] = {}
+        for mark_idx in mark_rows:
+            mark_num = df_raw.iloc[mark_idx, mark_col]
+            if isinstance(mark_num, (int, float)):
+                mark_str = str(int(mark_num)) if mark_num == int(mark_num) else str(mark_num)
+            else:
+                mark_str = str(mark_num).strip()
+            settlement = df_raw.iloc[mark_idx, col_idx]
+            if pd.notna(settlement) and isinstance(settlement, (int, float)):
+                marks_data[cycle_label][mark_str] = settlement
+            else:
+                marks_data[cycle_label][mark_str] = np.nan
+
+    # Собираем данные только для угловых марок (для расчёта углов)
     data = []
     for cycle_label, col_idx in cycle_cols.items():
         for mark_idx in mark_rows:
@@ -280,8 +290,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
                 })
 
     if not data:
-        st.error("Не удалось извлечь осадки для выбранных марок. Проверьте правильность номеров марок и столбца.")
-        st.write("Найденные марки:", [str(df_raw.iloc[idx, mark_col]) for idx in mark_rows[:10]])
+        st.error("Не удалось извлечь осадки для выбранных марок.")
         return None
 
     df_sett = pd.DataFrame(data)
@@ -315,7 +324,7 @@ def parse_settlement_data(file_bytes, sheet_name, corner_marks, L, B, mark_col=0
         })
 
     df_angles = pd.DataFrame(results)
-    return df_angles
+    return df_angles, marks_data
 
 # ------------------------------------------------------------
 # ГЕНЕРАЦИЯ ОТЧЁТОВ
@@ -339,7 +348,6 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # --- Титульный лист ---
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height - 50, report_params.get('организация', 'ООО "Геофундамент"'))
     c.setFont("Helvetica", 12)
@@ -368,7 +376,6 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
 
     c.showPage()
 
-    # --- Введение ---
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, height - 50, "1. ВВЕДЕНИЕ")
     c.setFont("Helvetica", 10)
@@ -378,7 +385,6 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
             "вновь возводимого здания, а также сохранности окружающей застройки.")
     c.drawString(50, height - 70, text)
 
-    # --- Результаты ---
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, height - 110, "2. РЕЗУЛЬТАТЫ НАБЛЮДЕНИЙ")
 
@@ -389,7 +395,6 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
         target_floor = 5 if 5 in floors else min(floors)
         df_floor = df_incl[df_incl['Этаж'] == target_floor].copy()
 
-        # Безопасное создание колонок
         if 'αx_abs' not in df_floor.columns:
             df_floor['αx_abs'] = df_floor['αx']
             df_floor['αy_abs'] = df_floor['αy']
@@ -398,14 +403,14 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
         last_row = df_floor[df_floor['Цикл'] == last_cycle]
 
         if not zero_row.empty and not last_row.empty:
-            zero_x = zero_row['αx_abs'].iloc[0]
-            zero_y = zero_row['αy_abs'].iloc[0]
-            last_x = last_row['αx_abs'].iloc[0]
-            last_y = last_row['αy_abs'].iloc[0]
+            zero_x = zero_row['αx_abs'].values[0]
+            zero_y = zero_row['αy_abs'].values[0]
+            last_x = last_row['αx_abs'].values[0]
+            last_y = last_row['αy_abs'].values[0]
             delta_x_deg = last_x - zero_x
             delta_y_deg = last_y - zero_y
-            delta_x_mm_m = delta_x_deg * 1000 / L if L != 0 else 0
-            delta_y_mm_m = delta_y_deg * 1000 / L if L != 0 else 0
+            delta_x_mm_m = delta_x_deg * 1000 / L
+            delta_y_mm_m = delta_y_deg * 1000 / L
 
             c.setFont("Helvetica", 10)
             c.drawString(50, height - 140, f"Цикл «нулевой» ({zero_cycle}) и последний цикл ({last_cycle})")
@@ -421,12 +426,7 @@ def generate_pdf_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L, 
                 c.drawString(50, height - 270, "Полученные значения не превысили допустимые величины.")
             else:
                 c.drawString(50, height - 270, "ВНИМАНИЕ: Полученные значения превышают допустимые величины!")
-        else:
-            c.drawString(50, height - 140, "Недостаточно данных для расчёта приростов углов.")
-    else:
-        c.drawString(50, height - 140, "Нет данных наклономера.")
 
-    # --- Выводы ---
     c.showPage()
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, height - 50, "3. ВЫВОДЫ")
@@ -451,7 +451,6 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
     font.name = 'Times New Roman'
     font.size = Pt(12)
 
-    # --- Титульный лист ---
     doc.add_paragraph(report_params.get('организация', 'ООО "Геофундамент"'), style='Title')
     doc.add_paragraph(f"Адрес: {report_params.get('address', 'г. Москва, ул. Суздальская, д. 18, корп. 4')}")
     doc.add_paragraph(f"Тел.: {report_params.get('phone', '8 499 399-30-60')}")
@@ -468,7 +467,6 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
     doc.add_paragraph(f"Дата: {datetime.now().strftime('%d.%m.%Y')}")
     doc.add_page_break()
 
-    # --- Введение ---
     doc.add_heading('1. ВВЕДЕНИЕ', level=1)
     doc.add_paragraph(
         f"Настоящий отчёт составлен по результатам геотехнического мониторинга объекта "
@@ -477,7 +475,6 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
         "вновь возводимого здания, а также сохранности окружающей застройки."
     )
 
-    # --- Результаты ---
     doc.add_heading('2. РЕЗУЛЬТАТЫ НАБЛЮДЕНИЙ', level=1)
 
     if df_incl is not None and not df_incl.empty:
@@ -494,14 +491,14 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
         last_row = df_floor[df_floor['Цикл'] == last_cycle]
 
         if not zero_row.empty and not last_row.empty:
-            zero_x = zero_row['αx_abs'].iloc[0]
-            zero_y = zero_row['αy_abs'].iloc[0]
-            last_x = last_row['αx_abs'].iloc[0]
-            last_y = last_row['αy_abs'].iloc[0]
+            zero_x = zero_row['αx_abs'].values[0]
+            zero_y = zero_row['αy_abs'].values[0]
+            last_x = last_row['αx_abs'].values[0]
+            last_y = last_row['αy_abs'].values[0]
             delta_x_deg = last_x - zero_x
             delta_y_deg = last_y - zero_y
-            delta_x_mm_m = delta_x_deg * 1000 / L if L != 0 else 0
-            delta_y_mm_m = delta_y_deg * 1000 / L if L != 0 else 0
+            delta_x_mm_m = delta_x_deg * 1000 / L
+            delta_y_mm_m = delta_y_deg * 1000 / L
 
             doc.add_paragraph(f"Цикл «нулевой» ({zero_cycle}) и последний цикл ({last_cycle})")
             doc.add_paragraph(f"Прирост угла наклона по оси X: {delta_x_deg:.3f}° ({delta_x_mm_m:.2f} мм/м)")
@@ -516,12 +513,7 @@ def generate_word_report(df_incl, df_sett_angles, cycles, alpha0_x, alpha0_y, L,
                 doc.add_paragraph("Полученные значения не превысили допустимые величины.")
             else:
                 doc.add_paragraph("ВНИМАНИЕ: Полученные значения превышают допустимые величины!")
-        else:
-            doc.add_paragraph("Недостаточно данных для расчёта приростов углов.")
-    else:
-        doc.add_paragraph("Нет данных наклономера.")
 
-    # --- Выводы ---
     doc.add_heading('3. ВЫВОДЫ', level=1)
     doc.add_paragraph("По результатам выполненных наблюдений установлено:")
     doc.add_paragraph("- Деформации (углы наклона) строящегося здания не превышают расчётных и предельных значений.")
@@ -572,10 +564,6 @@ def format_cycle_labels(df_incl, zero_cycle):
 # ------------------------------------------------------------
 # ОСНОВНАЯ ЛОГИКА ПРИЛОЖЕНИЯ
 # ------------------------------------------------------------
-st.set_page_config(page_title="Анализ наклономера + осадки", layout="wide")
-st.title("📐 Анализ данных накладного инклинометра и осадок фундамента")
-st.markdown("Загрузите Excel-файл с данными измерений, укажите параметры, и приложение построит графики и сформирует отчёты.")
-
 uploaded_file = st.file_uploader(
     "Загрузите Excel-файл с данными наклономера и/или осадок",
     type=["xlsx", "xls"],
@@ -689,8 +677,6 @@ if uploaded_file is not None:
             df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
             df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
             df_incl['αy_abs'] = df_incl['αy'] - df_incl['αy0_inc'] + alpha0_y
-            df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
-            df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
 
             cycle_labels = format_cycle_labels(df_incl, zero_cycle)
             st.session_state.cycle_labels = cycle_labels
@@ -707,7 +693,7 @@ if uploaded_file is not None:
             )
             st.session_state.selected_floors = selected_floors
 
-            # Блок осадок
+            # ---------- Блок осадок (ОБНОВЛЁННЫЙ) ----------
             sett_sheets = [s for s in all_sheets if 'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
             if sett_sheets:
                 st.subheader("📐 Данные осадок")
@@ -734,24 +720,90 @@ if uploaded_file is not None:
                             st.warning("Введите ровно 4 номера марок.")
                     except:
                         corner_marks = []
-                    L_sett = st.number_input("Длина фундамента L, м", value=70.0, step=1.0)
-                    B_sett = st.number_input("Ширина фундамента B, м", value=18.0, step=1.0)
+                    L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1)
+                    B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1)
 
                     if st.button("Рассчитать углы по осадкам"):
                         if len(corner_marks) == 4:
-                            df_sett_angles = parse_settlement_data(
+                            result = parse_settlement_data(
                                 file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett, mark_col=mark_col
                             )
-                            if df_sett_angles is not None:
+                            if result is not None:
+                                df_sett_angles, marks_data = result
                                 st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
-                                st.dataframe(df_sett_angles, use_container_width=True)
                                 st.session_state.df_sett_angles = df_sett_angles
+                                st.session_state.marks_data = marks_data
+                                st.session_state.corner_marks = corner_marks
+                                st.session_state.L_sett = L_sett
+                                st.session_state.B_sett = B_sett
+                                st.session_state.sett_sheet = selected_sett_sheet
                             else:
                                 st.error("Не удалось рассчитать углы. Проверьте правильность введённых данных.")
                         else:
                             st.error("Укажите 4 угловые марки.")
-                if 'df_sett_angles' in st.session_state:
-                    st.dataframe(st.session_state.df_sett_angles, use_container_width=True)
+
+                # Если есть рассчитанные данные, показываем таблицу и возможность смены марок
+                if 'df_sett_angles' in st.session_state and st.session_state.df_sett_angles is not None:
+                    df_angles = st.session_state.df_sett_angles
+                    marks_data = st.session_state.marks_data
+                    corner_marks = st.session_state.corner_marks
+                    L_sett = st.session_state.L_sett
+                    B_sett = st.session_state.B_sett
+                    sheet = st.session_state.sett_sheet
+
+                    st.subheader("📊 Осадки марок и углы крена")
+
+                    # ---- Таблица осадок всех марок ----
+                    if marks_data:
+                        # Определяем последний цикл
+                        last_cycle = max(marks_data.keys()) if marks_data else None
+                        if last_cycle:
+                            df_marks = pd.DataFrame({
+                                'Марка': list(marks_data[last_cycle].keys()),
+                                'Осадка, мм': list(marks_data[last_cycle].values())
+                            })
+                            # Подсветка выбранных угловых марок
+                            def highlight_corners(row):
+                                if str(row['Марка']) in [str(m) for m in corner_marks]:
+                                    return ['background-color: #ffff99'] * len(row)
+                                else:
+                                    return [''] * len(row)
+                            st.dataframe(df_marks.style.apply(highlight_corners, axis=1), use_container_width=True)
+                            st.caption("🟡 Жёлтым выделены выбранные угловые марки.")
+
+                    # ---- Мультиселект для смены марок ----
+                    all_marks = list(marks_data[last_cycle].keys()) if marks_data and last_cycle else []
+                    if all_marks:
+                        st.subheader("🔄 Сменить угловые марки")
+                        new_marks = st.multiselect(
+                            "Выберите 4 марки в порядке: нижний левый, нижний правый, верхний левый, верхний правый",
+                            options=all_marks,
+                            default=[str(m) for m in corner_marks],
+                            key="new_corner_marks"
+                        )
+                        if len(new_marks) == 4 and st.button("Пересчитать с новыми марками"):
+                            new_marks_parsed = []
+                            for m in new_marks:
+                                try:
+                                    new_marks_parsed.append(int(m))
+                                except ValueError:
+                                    new_marks_parsed.append(m)
+                            result = parse_settlement_data(
+                                file_bytes, sheet, new_marks_parsed, L_sett, B_sett, mark_col=mark_col
+                            )
+                            if result is not None:
+                                df_angles_new, marks_data_new = result
+                                st.session_state.df_sett_angles = df_angles_new
+                                st.session_state.marks_data = marks_data_new
+                                st.session_state.corner_marks = new_marks_parsed
+                                st.success("Углы пересчитаны!")
+                                st.rerun()
+                            else:
+                                st.error("Ошибка пересчёта. Проверьте марки.")
+
+                    # ---- Отображение углов ----
+                    st.subheader("📈 Углы наклона по осадкам")
+                    st.dataframe(df_angles, use_container_width=True)
             else:
                 st.info("Листов с осадками не найдено.")
 
@@ -1035,8 +1087,8 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"Ошибка обработки: {e}")
+        import traceback
         st.code(traceback.format_exc())
-        send_telegram(f"Ошибка: {e}\n{traceback.format_exc()}")
 
 else:
     st.info("👆 Загрузите Excel-файл для начала работы.")
