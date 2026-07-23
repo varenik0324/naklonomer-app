@@ -328,6 +328,7 @@ class DataProcessor:
     def calculate_displacement(df_incl_filtered: pd.DataFrame, cycle: str, floors: List[int],
                                L: float, vertical_scale: float = 1.0):
         df_cycle = df_incl_filtered[df_incl_filtered['Цикл'] == cycle]
+        # Если список этажей не пуст – фильтруем, иначе оставляем все
         if floors:
             df_cycle = df_cycle[df_cycle['Этаж'].isin(floors)]
         df_cycle = df_cycle.sort_values('Этаж')
@@ -349,11 +350,11 @@ class DataProcessor:
             prev_floor = floor
 
         if len(points) < 2:
-            return None, None, None, None, None
+            return None, None, None, None, None, None  # возвращаем также df_cycle
 
         top_x, top_y, top_z = points[-1]
         max_z = max(p[2] for p in points)
-        return points, top_x, top_y, top_z, max_z
+        return points, top_x, top_y, top_z, max_z, df_cycle
 
 # ------------------------------------------------------------
 # ВИЗУАЛИЗАТОР
@@ -361,10 +362,20 @@ class DataProcessor:
 class Visualizer:
     @staticmethod
     def plot_3d(points, top_x, top_y, top_z, max_z,
-                df_floors, cycle, building_length, building_width,
-                vertical_scale, df_sett_angles=None):
+                df_cycle, cycle, building_length, building_width,
+                vertical_scale, floors, df_sett_angles=None):
+        """
+        Строит 3D-модель.
+        """
+        # Если список этажей не пуст – фильтруем df_cycle для отображения, иначе берём все
+        if floors:
+            df_floors = df_cycle[df_cycle['Этаж'].isin(floors)].sort_values('Этаж')
+        else:
+            df_floors = df_cycle.sort_values('Этаж')
+
         fig = go.Figure()
 
+        # Исходная вертикаль
         fig.add_trace(go.Scatter3d(
             x=[0, 0], y=[0, 0], z=[0, max_z],
             mode='lines',
@@ -372,6 +383,7 @@ class Visualizer:
             name='Исходная вертикаль'
         ))
 
+        # Деформированная ось
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         zs = [p[2] for p in points]
@@ -383,7 +395,12 @@ class Visualizer:
             name='Деформированная ось'
         ))
 
+        # Векторы смещений и подписи этажей
+        # Используем точки, начиная со второй (индекс 1), т.к. первая – фундамент (0,0,0)
         for i, (x, y, z) in enumerate(points[1:], start=1):
+            # Если i-1 выходит за пределы df_floors – пропускаем (защита)
+            if i-1 >= len(df_floors):
+                continue
             floor = df_floors.iloc[i-1]['Этаж']
             fig.add_trace(go.Scatter3d(
                 x=[0, x], y=[0, y], z=[z, z],
@@ -402,7 +419,10 @@ class Visualizer:
                 showlegend=False
             ))
 
+        # Наклономеры на этажах
         for i, (x, y, z) in enumerate(points[1:], start=1):
+            if i-1 >= len(df_floors):
+                continue
             floor = df_floors.iloc[i-1]['Этаж']
             alpha_x = df_floors.iloc[i-1]['αx_abs']
             alpha_y = df_floors.iloc[i-1]['αy_abs']
@@ -415,6 +435,7 @@ class Visualizer:
                 name=f'Наклономер {floor}'
             ))
 
+        # Общий крен
         fig.add_trace(go.Scatter3d(
             x=[0, top_x], y=[0, top_y], z=[0, top_z],
             mode='lines+markers',
@@ -432,6 +453,7 @@ class Visualizer:
             showlegend=False
         ))
 
+        # Крен по осадкам
         if df_sett_angles is not None and not df_sett_angles.empty:
             sett_row = df_sett_angles[df_sett_angles['Цикл'] == cycle]
             if not sett_row.empty:
@@ -448,6 +470,7 @@ class Visualizer:
                     name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
                 ))
 
+        # Каркас здания
         half_len = building_length / 2
         half_wid = building_width / 2
         corners = [
@@ -536,7 +559,7 @@ def main():
         st.session_state["cycle_display_map"] = cycle_display
         st.session_state["file_loaded"] = True
 
-        # Параметры модели — используем виджеты с key, значения автоматически сохраняются в st.session_state
+        # Параметры модели
         st.sidebar.header("Параметры модели")
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
@@ -545,10 +568,6 @@ def main():
             format_func=lambda x: cycle_display[x],
             key="zero_cycle_select"
         )
-        # Но selectbox с key не обновляет переменную zero_cycle автоматически? Нет, она обновляется в st.session_state,
-        # но мы можем просто использовать st.session_state["zero_cycle_select"] для доступа к значению.
-        # Однако для удобства мы можем использовать переменную из виджета.
-
         L = st.sidebar.number_input("Высота этажа L, м", value=st.session_state["L"], step=0.1, format="%.1f", key="L_input")
         alpha0_x = st.sidebar.number_input("αx0, °", value=st.session_state["alpha0_x"], step=0.001, format="%.3f", key="alpha0_x")
         alpha0_y = st.sidebar.number_input("αy0, °", value=st.session_state["alpha0_y"], step=0.001, format="%.3f", key="alpha0_y")
@@ -565,9 +584,7 @@ def main():
         building_width = st.sidebar.number_input("Ширина здания, м", value=st.session_state["building_width"], step=0.1, key="building_width")
         vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, st.session_state["vertical_scale"], 0.1, key="vertical_scale")
 
-        # Теперь все нужные значения лежат в st.session_state под соответствующими ключами (zero_cycle_select, L_input, alpha0_x, alpha0_y, filter_type, filter_window, selected_floors, building_length, building_width, vertical_scale)
-        # Однако для zero_cycle_select мы использовали selectbox, его значение будет в st.session_state["zero_cycle_select"].
-        # Чтобы не путаться, прочитаем их оттуда.
+        # Чтение значений из состояния
         zero_cycle = st.session_state["zero_cycle_select"]
         L = st.session_state["L_input"]
         alpha0_x = st.session_state["alpha0_x"]
@@ -652,18 +669,18 @@ def main():
                                               format_func=lambda x: cycle_display[x], key="cycle_3d")
                 st.session_state["selected_cycle_key"] = selected_cycle
 
-                points, top_x, top_y, top_z, max_z = DataProcessor.calculate_displacement(
+                # Расчёт смещений и получение df_cycle
+                result = DataProcessor.calculate_displacement(
                     df_filtered, selected_cycle, selected_floors, L, vertical_scale
                 )
-                if points is None:
+                if result[0] is None:
                     st.warning("Для выбранного цикла и этажей нет данных.")
                 else:
-                    df_cycle = df_filtered[df_filtered['Цикл'] == selected_cycle]
-                    df_floors = df_cycle[df_cycle['Этаж'].isin(selected_floors)].sort_values('Этаж')
+                    points, top_x, top_y, top_z, max_z, df_cycle = result
                     fig = Visualizer.plot_3d(
                         points, top_x, top_y, top_z, max_z,
-                        df_floors, selected_cycle, building_length, building_width,
-                        vertical_scale, st.session_state["df_sett_angles"]
+                        df_cycle, selected_cycle, building_length, building_width,
+                        vertical_scale, selected_floors, st.session_state["df_sett_angles"]
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
