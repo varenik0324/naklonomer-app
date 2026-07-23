@@ -274,7 +274,7 @@ def parse_inclinometer_data(
     return df
 
 # ------------------------------------------------------------
-# ПАРСИНГ ОСАДОК (без отладочных выводов)
+# ПАРСИНГ ОСАДОК (исправленная версия)
 # ------------------------------------------------------------
 @st.cache_data
 def parse_settlement_data(
@@ -324,12 +324,12 @@ def parse_settlement_data(
                         st.error(f"Столбец {manual_osad_col} выходит за пределы листа.")
                         return None
     else:
-        # Сначала найдём все колонки, где в заголовке есть "осадк" (регистронезависимо)
+        # Сначала найдём все колонки, где в заголовке есть "осадк" и нет "общая" (регистронезависимо)
         osad_cols = {}
         for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
             if pd.notna(cell):
                 cell_str = str(cell).strip().lower()
-                if 'осадк' in cell_str:
+                if 'осадк' in cell_str and 'общая' not in cell_str:
                     osad_cols[col_idx] = cell_str
 
         # Проходим по колонкам с циклами
@@ -367,6 +367,12 @@ def parse_settlement_data(
         return None
 
     # --- Определяем нулевой цикл ---
+    # Убираем возможные дубликаты, сохраняя порядок
+    unique_cycles = []
+    for c in all_cycles:
+        if c not in unique_cycles:
+            unique_cycles.append(c)
+
     if zero_cycle_sett is None:
         def try_parse_date(s):
             for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y-%m-%d'):
@@ -376,14 +382,15 @@ def parse_settlement_data(
                     continue
             return None
         try:
-            sorted_cycles = sorted(all_cycles, key=lambda x: try_parse_date(x) or x)
+            sorted_cycles = sorted(unique_cycles, key=lambda x: try_parse_date(x) or x)
         except:
-            sorted_cycles = sorted(all_cycles)
+            sorted_cycles = sorted(unique_cycles)
         zero_cycle_sett = sorted_cycles[0] if sorted_cycles else None
     else:
-        if zero_cycle_sett not in all_cycles:
+        # Проверяем, что выбранный нулевой цикл присутствует
+        if zero_cycle_sett not in unique_cycles:
             st.warning(f"Выбранный нулевой цикл {zero_cycle_sett} не найден в данных. Используем первый доступный.")
-            zero_cycle_sett = all_cycles[0] if all_cycles else None
+            zero_cycle_sett = unique_cycles[0] if unique_cycles else None
 
     if zero_cycle_sett is None:
         st.error("Не удалось определить нулевой цикл.")
@@ -447,7 +454,7 @@ def parse_settlement_data(
         st.error("Не удалось найти данные для выбранных угловых марок ни в одном цикле.")
         return None
 
-    # --- Вычисление приростов осадок ---
+    # --- Вычисление приростов осадок (пропускаем нулевой цикл) ---
     data = []
     for cycle_label, cols in marks_abs_data.items():
         if cycle_label == zero_cycle_sett:
