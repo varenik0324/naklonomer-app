@@ -536,16 +536,19 @@ def main():
         st.session_state["cycle_display_map"] = cycle_display
         st.session_state["file_loaded"] = True
 
-        # Параметры модели
+        # Параметры модели — используем виджеты с key, значения автоматически сохраняются в st.session_state
         st.sidebar.header("Параметры модели")
-        zero_cycle_idx = cycles.index(st.session_state["zero_cycle"]) if st.session_state["zero_cycle"] in cycles else 0
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
             options=cycles,
-            index=zero_cycle_idx,
+            index=cycles.index(st.session_state["zero_cycle"]) if st.session_state["zero_cycle"] in cycles else 0,
             format_func=lambda x: cycle_display[x],
             key="zero_cycle_select"
         )
+        # Но selectbox с key не обновляет переменную zero_cycle автоматически? Нет, она обновляется в st.session_state,
+        # но мы можем просто использовать st.session_state["zero_cycle_select"] для доступа к значению.
+        # Однако для удобства мы можем использовать переменную из виджета.
+
         L = st.sidebar.number_input("Высота этажа L, м", value=st.session_state["L"], step=0.1, format="%.1f", key="L_input")
         alpha0_x = st.sidebar.number_input("αx0, °", value=st.session_state["alpha0_x"], step=0.001, format="%.3f", key="alpha0_x")
         alpha0_y = st.sidebar.number_input("αy0, °", value=st.session_state["alpha0_y"], step=0.001, format="%.3f", key="alpha0_y")
@@ -562,17 +565,19 @@ def main():
         building_width = st.sidebar.number_input("Ширина здания, м", value=st.session_state["building_width"], step=0.1, key="building_width")
         vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, st.session_state["vertical_scale"], 0.1, key="vertical_scale")
 
-        # Обновляем состояние (словарный синтаксис)
-        st.session_state["zero_cycle"] = zero_cycle
-        st.session_state["L"] = L
-        st.session_state["alpha0_x"] = alpha0_x
-        st.session_state["alpha0_y"] = alpha0_y
-        st.session_state["filter_type"] = filter_type
-        st.session_state["filter_window"] = filter_window
-        st.session_state["selected_floors"] = selected_floors
-        st.session_state["building_length"] = building_length
-        st.session_state["building_width"] = building_width
-        st.session_state["vertical_scale"] = vertical_scale
+        # Теперь все нужные значения лежат в st.session_state под соответствующими ключами (zero_cycle_select, L_input, alpha0_x, alpha0_y, filter_type, filter_window, selected_floors, building_length, building_width, vertical_scale)
+        # Однако для zero_cycle_select мы использовали selectbox, его значение будет в st.session_state["zero_cycle_select"].
+        # Чтобы не путаться, прочитаем их оттуда.
+        zero_cycle = st.session_state["zero_cycle_select"]
+        L = st.session_state["L_input"]
+        alpha0_x = st.session_state["alpha0_x"]
+        alpha0_y = st.session_state["alpha0_y"]
+        filter_type = st.session_state["filter_type"]
+        filter_window = st.session_state["filter_window"]
+        selected_floors = st.session_state["selected_floors"]
+        building_length = st.session_state["building_length"]
+        building_width = st.session_state["building_width"]
+        vertical_scale = st.session_state["vertical_scale"]
 
         # Обработка данных (с кэшированием)
         @st.cache_data
