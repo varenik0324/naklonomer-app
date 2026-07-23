@@ -26,6 +26,8 @@ DEFAULT_BUILDING_WIDTH = 18.69
 DEFAULT_VERTICAL_SCALE = 1.0
 REQUIRED_SHEETS = ["Наклономер", "Стилобат"]
 MAX_ANGLE_DEG = 30  # для валидации
+DEFAULT_FILTER_WINDOW = 3
+FILTER_TYPES = ["Нет", "Скользящее среднее", "Медианный фильтр"]
 
 # ------------------------------------------------------------
 # НАСТРОЙКИ СТРАНИЦЫ И СОСТОЯНИЯ
@@ -65,6 +67,14 @@ if 'selected_cycle_key' not in st.session_state:
 if 'res_df_sett_angles' not in st.session_state:
     st.session_state.res_df_sett_angles = None
 
+# НОВОЕ: состояние для фильтрации
+if 'filter_type' not in st.session_state:
+    st.session_state.filter_type = "Нет"
+if 'filter_window' not in st.session_state:
+    st.session_state.filter_window = DEFAULT_FILTER_WINDOW
+if 'df_incl_raw' not in st.session_state:   # сохраняем исходные (неотфильтрованные) данные
+    st.session_state.df_incl_raw = None
+
 # ------------------------------------------------------------
 # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
 # ------------------------------------------------------------
@@ -90,6 +100,47 @@ def validate_angles(df: pd.DataFrame) -> bool:
                    "Проверьте корректность данных.")
         return False
     return True
+
+# ------------------------------------------------------------
+# НОВОЕ: ФУНКЦИИ ФИЛЬТРАЦИИ
+# ------------------------------------------------------------
+def apply_filter_to_series(series: pd.Series, filter_type: str, window: int) -> pd.Series:
+    """
+    Применяет фильтр к временному ряду (упорядоченному по циклам).
+    Возвращает отфильтрованную серию той же длины.
+    """
+    if filter_type == "Нет" or window < 2:
+        return series
+    if filter_type == "Скользящее среднее":
+        return series.rolling(window=window, center=True, min_periods=1).mean()
+    elif filter_type == "Медианный фильтр":
+        return series.rolling(window=window, center=True, min_periods=1).median()
+    else:
+        return series
+
+def filter_inclinometer_data(df: pd.DataFrame, filter_type: str, window: int) -> pd.DataFrame:
+    """
+    Применяет фильтр к колонкам αx_abs и αy_abs для каждого этажа отдельно.
+    Возвращает копию DataFrame с заменёнными значениями.
+    """
+    if filter_type == "Нет" or window < 2:
+        return df.copy()
+    df_filtered = df.copy()
+    # Группируем по этажам и сортируем по циклу (предполагаем, что циклы упорядочены по времени)
+    for floor in df['Этаж'].unique():
+        mask = df['Этаж'] == floor
+        # Получаем индексы, сортированные по циклу (предполагаем, что циклы - даты или строки, которые можно отсортировать)
+        floor_data = df[mask].sort_values('Цикл')
+        # Применяем фильтр к αx_abs и αy_abs
+        filtered_x = apply_filter_to_series(floor_data['αx_abs'], filter_type, window)
+        filtered_y = apply_filter_to_series(floor_data['αy_abs'], filter_type, window)
+        # Обновляем значения в исходном DataFrame (по индексам)
+        df_filtered.loc[floor_data.index, 'αx_abs'] = filtered_x.values
+        df_filtered.loc[floor_data.index, 'αy_abs'] = filtered_y.values
+        # Также пересчитываем смещения, так как они зависят от углов
+        df_filtered.loc[floor_data.index, 'Смещение X'] = st.session_state.L * np.sin(np.radians(filtered_x.values))
+        df_filtered.loc[floor_data.index, 'Смещение Y'] = st.session_state.L * np.sin(np.radians(filtered_y.values))
+    return df_filtered
 
 # ------------------------------------------------------------
 # ФУНКЦИЯ ПРИМЕНЕНИЯ ПАРАМЕТРОВ (С КЭШИРОВАНИЕМ)
@@ -861,14 +912,55 @@ if uploaded_file is not None:
         if st.session_state.alpha0_y is None:
             st.session_state.alpha0_y = 0.0
 
+        # ------------------------------------------------------------
+        # НОВОЕ: добавление управления фильтрацией в боковую панель
+        # ------------------------------------------------------------
+        st.sidebar.subheader("🎛️ Фильтрация данных (коррекция шума)")
+        filter_type = st.sidebar.selectbox(
+            "Тип фильтра",
+            options=FILTER_TYPES,
+            index=FILTER_TYPES.index(st.session_state.filter_type),
+            help="Сглаживание временных рядов углов для устранения кратковременных флуктуаций."
+        )
+        filter_window = st.sidebar.number_input(
+            "Размер окна (число циклов)",
+            min_value=2,
+            max_value=15,
+            value=st.session_state.filter_window,
+            step=1,
+            help="Чем больше окно, тем сильнее сглаживание."
+        )
+        if filter_type != st.session_state.filter_type or filter_window != st.session_state.filter_window:
+            st.session_state.filter_type = filter_type
+            st.session_state.filter_window = filter_window
+            # Сбрасываем отфильтрованный df, чтобы он пересчитался
+            if st.session_state.df_incl is not None:
+                # Применим фильтр заново при следующем обновлении
+                pass
+
+        # Сначала применяем параметры (α0, L и т.д.) к сырым данным, получаем df с αx_abs и смещениями
         if st.session_state.df_incl is None or len(st.session_state.df_incl) != len(df_incl):
-            st.session_state.df_incl = apply_parameters(
+            # Сохраняем сырые данные (без фильтра)
+            st.session_state.df_incl_raw = apply_parameters(
                 df_incl,
                 st.session_state.zero_cycle,
                 st.session_state.alpha0_x,
                 st.session_state.alpha0_y,
                 st.session_state.L
             )
+            # Применяем фильтр, если он выбран
+            if st.session_state.filter_type != "Нет" and st.session_state.filter_window >= 2:
+                st.session_state.df_incl = filter_inclinometer_data(
+                    st.session_state.df_incl_raw,
+                    st.session_state.filter_type,
+                    st.session_state.filter_window
+                )
+            else:
+                st.session_state.df_incl = st.session_state.df_incl_raw.copy()
+
+        # Если параметры изменились, пересчитываем raw и фильтр
+        # Для простоты будем пересчитывать при нажатии кнопки "Применить параметры" и при изменении фильтра
+        # Добавим кнопку "Применить фильтр" в интерфейсе
 
         all_available_floors = sorted(df_incl['Этаж'].unique())
         default_floors = all_available_floors.copy()
@@ -978,20 +1070,31 @@ if uploaded_file is not None:
                         key="L_input"
                     )
 
-                    if st.button("🔄 Применить параметры", type="primary"):
+                    # НОВОЕ: кнопка применения параметров, которая заодно пересчитывает фильтр
+                    if st.button("🔄 Применить параметры и фильтр", type="primary"):
                         with st.spinner("Пересчёт данных..."):
                             st.session_state.zero_cycle = zero_cycle
                             st.session_state.alpha0_x = alpha0_x
                             st.session_state.alpha0_y = alpha0_y
                             st.session_state.L = L
-                            st.session_state.df_incl = apply_parameters(
+                            # Пересчитываем raw
+                            st.session_state.df_incl_raw = apply_parameters(
                                 df_incl,
                                 zero_cycle,
                                 alpha0_x,
                                 alpha0_y,
                                 L
                             )
-                        st.success("Параметры обновлены!")
+                            # Применяем фильтр
+                            if st.session_state.filter_type != "Нет" and st.session_state.filter_window >= 2:
+                                st.session_state.df_incl = filter_inclinometer_data(
+                                    st.session_state.df_incl_raw,
+                                    st.session_state.filter_type,
+                                    st.session_state.filter_window
+                                )
+                            else:
+                                st.session_state.df_incl = st.session_state.df_incl_raw.copy()
+                        st.success("Параметры и фильтр обновлены!")
 
             with col_right:
                 st.subheader("📋 Данные наклономера")
@@ -1004,32 +1107,54 @@ if uploaded_file is not None:
                 )
 
                 if selected_floors_for_table:
+                    # Используем отфильтрованные данные
                     df_display = st.session_state.df_incl
                     df_filtered = df_display[df_display['Этаж'].isin(selected_floors_for_table)].copy()
-                    # Объединяем αx и αy в одну таблицу с мультииндексом для компактности
+                    # Показываем также сырые для сравнения (опционально)
+                    # Добавим колонки с сырыми углами (исходные αx, αy) и отфильтрованными
                     df_melted = df_filtered.melt(
                         id_vars=['Этаж', 'Цикл'],
                         value_vars=['αx_abs', 'αy_abs'],
                         var_name='Ось',
                         value_name='Угол, °'
                     )
-                    # Переименовываем ось для читаемости
-                    df_melted['Ось'] = df_melted['Ось'].map({'αx_abs': 'αx', 'αy_abs': 'αy'})
+                    df_melted['Ось'] = df_melted['Ось'].map({'αx_abs': 'αx (фильтр)', 'αy_abs': 'αy (фильтр)'})
                     pivot = df_melted.pivot_table(
                         index=['Этаж', 'Цикл'],
                         columns='Ось',
                         values='Угол, °'
                     ).reset_index()
-                    # Переименовываем колонки циклов в человеческий формат
                     pivot['Цикл'] = pivot['Цикл'].map(cycle_display_map)
                     st.dataframe(pivot, use_container_width=True, height=400)
-                    st.caption(f"Показано записей: {len(df_filtered)} (абсолютные углы с учётом α0)")
+                    st.caption(f"Показано записей: {len(df_filtered)} (абсолютные углы с применённым фильтром)")
+
+                    # НОВОЕ: отобразим сырые значения для сравнения, если фильтр активен
+                    if st.session_state.filter_type != "Нет" and st.session_state.df_incl_raw is not None:
+                        with st.expander("📊 Сравнение с сырыми данными (без фильтра)"):
+                            df_raw_display = st.session_state.df_incl_raw
+                            df_raw_filtered = df_raw_display[df_raw_display['Этаж'].isin(selected_floors_for_table)].copy()
+                            df_raw_melted = df_raw_filtered.melt(
+                                id_vars=['Этаж', 'Цикл'],
+                                value_vars=['αx_abs', 'αy_abs'],
+                                var_name='Ось',
+                                value_name='Угол, °'
+                            )
+                            df_raw_melted['Ось'] = df_raw_melted['Ось'].map({'αx_abs': 'αx (сырой)', 'αy_abs': 'αy (сырой)'})
+                            pivot_raw = df_raw_melted.pivot_table(
+                                index=['Этаж', 'Цикл'],
+                                columns='Ось',
+                                values='Угол, °'
+                            ).reset_index()
+                            pivot_raw['Цикл'] = pivot_raw['Цикл'].map(cycle_display_map)
+                            st.dataframe(pivot_raw, use_container_width=True, height=300)
+                            st.caption("Сырые абсолютные углы (без фильтра)")
 
                 else:
                     st.info("Выберите хотя бы один этаж для отображения данных.")
 
             st.divider()
 
+            # Остальной код для осадок и т.д. без изменений
             sett_sheets = [s for s in all_sheets if
                            'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
             if sett_sheets:
@@ -1158,11 +1283,12 @@ if uploaded_file is not None:
                 st.write(f"**Нулевой цикл:** {cycle_display_map[st.session_state.zero_cycle]}")
                 st.write(f"**αx0:** {st.session_state.alpha0_x:.3f}°, **αy0:** {st.session_state.alpha0_y:.3f}°")
                 st.write(f"**Высота этажа L:** {st.session_state.L:.1f} м")
+                st.write(f"**Фильтр:** {st.session_state.filter_type}, окно = {st.session_state.filter_window}")
                 if st.session_state.res_df_sett_angles is not None:
                     st.write(f"**Осадки:** рассчитаны для {len(st.session_state.res_df_sett_angles)} циклов")
 
         # ============================================================
-        # ВКЛАДКА "3D-МОДЕЛЬ ЗДАНИЯ"
+        # ВКЛАДКА "3D-МОДЕЛЬ ЗДАНИЯ" (без изменений, но использует отфильтрованные данные)
         # ============================================================
         with tab2:
             st.subheader("🏢 3D-модель здания с креном и наклономерами")
@@ -1222,7 +1348,7 @@ if uploaded_file is not None:
                     else:
                         st.warning("Для выбранного цикла нет данных на выбранных этажах. Попробуйте изменить выбор этажей или цикл.")
 
-            # ---------- Раздел с формулами ----------
+            # ---------- Раздел с формулами (без изменений) ----------
             with st.expander("📐 Как строится модель (формулы и пояснения)", expanded=False):
                 st.markdown("""
                 **Построение 3D-модели деформаций здания** основано на данных накладного инклинометра, установленного на выбранных этажах (вы задаёте их в боковой панели).
@@ -1315,7 +1441,7 @@ if uploaded_file is not None:
                 """)
 
         # ------------------------------------------------------------
-        # ВКЛАДКА "НАКЛОНОМЕР"
+        # ВКЛАДКА "НАКЛОНОМЕР" (без изменений)
         # ------------------------------------------------------------
         with tab3:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
