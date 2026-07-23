@@ -51,6 +51,16 @@ if 'current_index' not in st.session_state:
     st.session_state.current_index = 0
 if 'selected_floors' not in st.session_state:
     st.session_state.selected_floors = []
+if 'df_incl' not in st.session_state:
+    st.session_state.df_incl = None
+if 'zero_cycle' not in st.session_state:
+    st.session_state.zero_cycle = None
+if 'L' not in st.session_state:
+    st.session_state.L = 3.0
+if 'alpha0_x' not in st.session_state:
+    st.session_state.alpha0_x = 0.0
+if 'alpha0_y' not in st.session_state:
+    st.session_state.alpha0_y = 0.0
 
 # ------------------------------------------------------------
 # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
@@ -64,6 +74,26 @@ def validate_excel_file(xl: pd.ExcelFile) -> bool:
                  f"Доступны: {', '.join(sheets)}")
         return False
     return True
+
+# ------------------------------------------------------------
+# ФУНКЦИЯ ПРИМЕНЕНИЯ ПАРАМЕТРОВ (ДОБАВЛЯЕТ КОЛОНКИ αx_abs, αy_abs)
+# ------------------------------------------------------------
+def apply_parameters(df_incl: pd.DataFrame, zero_cycle: str, alpha0_x: float, alpha0_y: float, L: float) -> pd.DataFrame:
+    """
+    Добавляет в DataFrame колонки:
+    - αx_abs, αy_abs – абсолютные углы с учётом начальных,
+    - Смещение X, Смещение Y – смещения на этаже (L * sin(угол)).
+    """
+    df = df_incl.copy()
+    zero_data = df[df['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(
+        columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'}
+    )
+    df = df.merge(zero_data, on='Этаж', how='left')
+    df['αx_abs'] = df['αx'] - df['αx0_inc'] + alpha0_x
+    df['αy_abs'] = df['αy'] - df['αy0_inc'] + alpha0_y
+    df['Смещение X'] = L * np.sin(np.radians(df['αx_abs']))
+    df['Смещение Y'] = L * np.sin(np.radians(df['αy_abs']))
+    return df
 
 # ------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (кэшируемые)
@@ -801,6 +831,7 @@ if uploaded_file is not None:
         if st.sidebar.checkbox("Показать логи", value=False):
             st.sidebar.text("Логирование включено (вывод в консоль)")
 
+        # --- Загрузка и парсинг данных наклономера ---
         df_incl = parse_inclinometer_data(
             file_bytes, incl_sheet_name,
             search_start=search_start, search_end=search_end
@@ -841,6 +872,28 @@ if uploaded_file is not None:
 
         if df_incl is None:
             st.stop()
+
+        # --- Применение параметров по умолчанию (или из session_state) ---
+        cycles = sorted(df_incl['Цикл'].unique())
+        default_zero_cycle = cycles[0] if cycles else None
+        if st.session_state.zero_cycle is None or st.session_state.zero_cycle not in cycles:
+            st.session_state.zero_cycle = default_zero_cycle
+        if st.session_state.L is None:
+            st.session_state.L = 3.0
+        if st.session_state.alpha0_x is None:
+            st.session_state.alpha0_x = 0.0
+        if st.session_state.alpha0_y is None:
+            st.session_state.alpha0_y = 0.0
+
+        # Если в session_state ещё нет обработанного df_incl, или он устарел, применяем параметры
+        if st.session_state.df_incl is None or len(st.session_state.df_incl) != len(df_incl):
+            st.session_state.df_incl = apply_parameters(
+                df_incl,
+                st.session_state.zero_cycle,
+                st.session_state.alpha0_x,
+                st.session_state.alpha0_y,
+                st.session_state.L
+            )
 
         # --- Боковая панель: выбор этажей ---
         all_available_floors = sorted(df_incl['Этаж'].unique())
@@ -889,7 +942,7 @@ if uploaded_file is not None:
         cycle_keys = list(cycle_display_map.keys())
 
         # ============================================================
-        # НОВАЯ ВКЛАДКА "ДАННЫЕ И ПАРАМЕТРЫ" (ПОЛНОСТЬЮ ПЕРЕРАБОТАНА)
+        # ВКЛАДКА "ДАННЫЕ И ПАРАМЕТРЫ" (ПЕРЕРАБОТАННАЯ)
         # ============================================================
         with tab1:
             if len(cycle_keys) == 0:
@@ -920,8 +973,9 @@ if uploaded_file is not None:
                     zero_cycle_display = st.selectbox(
                         "**Нулевой цикл**",
                         options=[cycle_display_map[k] for k in cycle_keys],
-                        index=0,
-                        help="Цикл, относительно которого считаются приросты углов наклона."
+                        index=cycle_keys.index(st.session_state.zero_cycle) if st.session_state.zero_cycle in cycle_keys else 0,
+                        help="Цикл, относительно которого считаются приросты углов наклона.",
+                        key="zero_cycle_select"
                     )
                     zero_cycle = [k for k, v in cycle_display_map.items() if v == zero_cycle_display][0]
 
@@ -929,32 +983,45 @@ if uploaded_file is not None:
                     with col_a1:
                         alpha0_x = st.number_input(
                             "**αx0, °**",
-                            value=0.0,
+                            value=st.session_state.alpha0_x,
                             step=0.001,
                             format="%.3f",
-                            help="Начальный угол наклона по оси X (корректировка)."
+                            help="Начальный угол наклона по оси X (корректировка).",
+                            key="alpha0_x_input"
                         )
                     with col_a2:
                         alpha0_y = st.number_input(
                             "**αy0, °**",
-                            value=0.0,
+                            value=st.session_state.alpha0_y,
                             step=0.001,
                             format="%.3f",
-                            help="Начальный угол наклона по оси Y (корректировка)."
+                            help="Начальный угол наклона по оси Y (корректировка).",
+                            key="alpha0_y_input"
                         )
 
                     L = st.number_input(
                         "**Высота этажа L, м**",
-                        value=3.0,
+                        value=st.session_state.L,
                         step=0.1,
                         format="%.1f",
-                        help="Высота одного этажа для пересчёта углов в смещения."
+                        help="Высота одного этажа для пересчёта углов в смещения.",
+                        key="L_input"
                     )
 
-                    # Кнопка применения (на случай, если нужно явно обновить)
+                    # Кнопка применения
                     if st.button("🔄 Применить параметры", type="primary"):
                         st.session_state.zero_cycle = zero_cycle
+                        st.session_state.alpha0_x = alpha0_x
+                        st.session_state.alpha0_y = alpha0_y
                         st.session_state.L = L
+                        # Пересчитываем df_incl с новыми параметрами
+                        st.session_state.df_incl = apply_parameters(
+                            df_incl,
+                            zero_cycle,
+                            alpha0_x,
+                            alpha0_y,
+                            L
+                        )
                         st.success("Параметры обновлены!")
 
             with col_right:
@@ -969,32 +1036,32 @@ if uploaded_file is not None:
                 )
 
                 if selected_floors_for_table:
-                    df_filtered = df_incl[df_incl['Этаж'].isin(selected_floors_for_table)].copy()
-                    # Подготовка сводной таблицы: строки – этажи, колонки – циклы, значения – углы
-                    # Для компактности покажем две таблицы: для αx и αy
-                    pivot_x = df_filtered.pivot(index='Этаж', columns='Цикл', values='αx')
-                    pivot_y = df_filtered.pivot(index='Этаж', columns='Цикл', values='αy')
+                    # Используем обработанный df из session_state, чтобы показывать αx_abs и αy_abs
+                    df_display = st.session_state.df_incl
+                    df_filtered = df_display[df_display['Этаж'].isin(selected_floors_for_table)].copy()
+                    # Подготовка сводных таблиц: для абсолютных углов
+                    pivot_x = df_filtered.pivot(index='Этаж', columns='Цикл', values='αx_abs')
+                    pivot_y = df_filtered.pivot(index='Этаж', columns='Цикл', values='αy_abs')
 
                     # Переименовываем колонки в человеческий формат
                     pivot_x.columns = [cycle_display_map.get(c, c) for c in pivot_x.columns]
                     pivot_y.columns = [cycle_display_map.get(c, c) for c in pivot_y.columns]
 
                     # Показываем таблицы в двух вкладках
-                    tab_x, tab_y = st.tabs(["📊 αx (градусы)", "📊 αy (градусы)"])
+                    tab_x, tab_y = st.tabs(["📊 αx (градусы, абсолютные)", "📊 αy (градусы, абсолютные)"])
                     with tab_x:
                         st.dataframe(pivot_x, use_container_width=True, height=300)
                     with tab_y:
                         st.dataframe(pivot_y, use_container_width=True, height=300)
 
-                    # Сводка по количеству записей
-                    st.caption(f"Показано записей: {len(df_filtered)}")
+                    st.caption(f"Показано записей: {len(df_filtered)} (абсолютные углы с учётом α0)")
 
                 else:
                     st.info("Выберите хотя бы один этаж для отображения данных.")
 
             st.divider()
 
-            # --- Блок осадок (оставлен без изменений, но с улучшенным оформлением) ---
+            # --- Блок осадок ---
             sett_sheets = [s for s in all_sheets if
                            'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
             if sett_sheets:
@@ -1063,7 +1130,7 @@ if uploaded_file is not None:
                                         continue
                                 return None
                             sorted_cycles_temp = sorted(all_cycles_temp, key=lambda x: try_parse_date(x) or x)
-                            zero_dt = pd.to_datetime(zero_cycle)
+                            zero_dt = pd.to_datetime(st.session_state.zero_cycle)
                             best_cycle = sorted_cycles_temp[0] if sorted_cycles_temp else None
                             if sorted_cycles_temp:
                                 for cyc in sorted_cycles_temp:
@@ -1121,17 +1188,15 @@ if uploaded_file is not None:
 
             # ---------- Вывод параметров (для контроля) ----------
             with st.expander("ℹ️ Текущие параметры расчёта", expanded=False):
-                st.write(f"**Нулевой цикл:** {zero_cycle_display}")
-                st.write(f"**αx0:** {alpha0_x:.3f}°, **αy0:** {alpha0_y:.3f}°")
-                st.write(f"**Высота этажа L:** {L:.1f} м")
+                st.write(f"**Нулевой цикл:** {cycle_display_map[st.session_state.zero_cycle]}")
+                st.write(f"**αx0:** {st.session_state.alpha0_x:.3f}°, **αy0:** {st.session_state.alpha0_y:.3f}°")
+                st.write(f"**Высота этажа L:** {st.session_state.L:.1f} м")
                 if 'res_df_sett_angles' in st.session_state:
                     st.write(f"**Осадки:** рассчитаны для {len(st.session_state.res_df_sett_angles)} циклов")
 
         # ============================================================
-        # КОНЕЦ ВКЛАДКИ "ДАННЫЕ И ПАРАМЕТРЫ"
+        # ВКЛАДКА "3D-МОДЕЛЬ ЗДАНИЯ"
         # ============================================================
-
-        # --- Остальные вкладки без изменений ---
         with tab2:
             st.subheader("🏢 3D-модель здания с креном и наклономерами")
             st.markdown("""
@@ -1144,6 +1209,12 @@ if uploaded_file is not None:
             - **Фиолетовая стрелка** (если есть) – крен из данных осадок.
             - **Чёрный каркас** – контур здания с наклоном.
             """)
+
+            # Используем обработанный df из session_state
+            df_incl_processed = st.session_state.df_incl
+            if df_incl_processed is None:
+                st.error("Данные не обработаны. Пожалуйста, примените параметры во вкладке 'Данные и параметры'.")
+                st.stop()
 
             total_cycles = len(cycle_keys)
             if total_cycles == 0:
@@ -1173,7 +1244,7 @@ if uploaded_file is not None:
                 floors = st.session_state.get("selected_floors", [])
 
                 fig_building = plot_building_3d(
-                    df_incl,
+                    df_incl_processed,
                     selected_cycle_building,
                     st.session_state.L,
                     building_length,
@@ -1279,6 +1350,9 @@ if uploaded_file is not None:
                 Результат – интерактивная 3D-модель, которую можно вращать и масштабировать.
                 """)
 
+        # ------------------------------------------------------------
+        # ВКЛАДКА "НАКЛОНОМЕР"
+        # ------------------------------------------------------------
         with tab3:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
             st.markdown("""
