@@ -328,7 +328,6 @@ class DataProcessor:
     def calculate_displacement(df_incl_filtered: pd.DataFrame, cycle: str, floors: List[int],
                                L: float, vertical_scale: float = 1.0):
         df_cycle = df_incl_filtered[df_incl_filtered['Цикл'] == cycle]
-        # Если список этажей не пуст – фильтруем, иначе оставляем все
         if floors:
             df_cycle = df_cycle[df_cycle['Этаж'].isin(floors)]
         df_cycle = df_cycle.sort_values('Этаж')
@@ -350,24 +349,21 @@ class DataProcessor:
             prev_floor = floor
 
         if len(points) < 2:
-            return None, None, None, None, None, None  # возвращаем также df_cycle
+            return None, None, None, None, None, None
 
         top_x, top_y, top_z = points[-1]
         max_z = max(p[2] for p in points)
         return points, top_x, top_y, top_z, max_z, df_cycle
 
 # ------------------------------------------------------------
-# ВИЗУАЛИЗАТОР
+# ВИЗУАЛИЗАТОР (УЛУЧШЕННАЯ 3D-МОДЕЛЬ)
 # ------------------------------------------------------------
 class Visualizer:
     @staticmethod
     def plot_3d(points, top_x, top_y, top_z, max_z,
                 df_cycle, cycle, building_length, building_width,
                 vertical_scale, floors, df_sett_angles=None):
-        """
-        Строит 3D-модель.
-        """
-        # Если список этажей не пуст – фильтруем df_cycle для отображения, иначе берём все
+        # Фильтруем df_floors
         if floors:
             df_floors = df_cycle[df_cycle['Этаж'].isin(floors)].sort_values('Этаж')
         else:
@@ -390,36 +386,34 @@ class Visualizer:
         fig.add_trace(go.Scatter3d(
             x=xs, y=ys, z=zs,
             mode='lines+markers',
-            line=dict(color='red', width=5),
-            marker=dict(size=8, color='red'),
+            line=dict(color='red', width=6),
+            marker=dict(size=10, color='red', symbol='circle'),
             name='Деформированная ось'
         ))
 
-        # Векторы смещений и подписи этажей
-        # Используем точки, начиная со второй (индекс 1), т.к. первая – фундамент (0,0,0)
+        # Векторы смещений
         for i, (x, y, z) in enumerate(points[1:], start=1):
-            # Если i-1 выходит за пределы df_floors – пропускаем (защита)
             if i-1 >= len(df_floors):
                 continue
             floor = df_floors.iloc[i-1]['Этаж']
             fig.add_trace(go.Scatter3d(
                 x=[0, x], y=[0, y], z=[z, z],
                 mode='lines+markers',
-                line=dict(color='green', width=3, dash='dot'),
-                marker=dict(size=6, color='green', symbol='circle'),
+                line=dict(color='lime', width=4, dash='dot'),
+                marker=dict(size=8, color='lime', symbol='circle'),
                 showlegend=False
             ))
             dist = np.sqrt(x**2 + y**2)
             fig.add_trace(go.Scatter3d(
                 x=[x], y=[y], z=[z],
                 mode='text',
-                text=[f"{floor}эт: {dist:.3f} м"],
+                text=[f"<b>{floor}эт</b><br>{dist:.3f} м"],
                 textposition='top center',
-                textfont=dict(color='green', size=10),
+                textfont=dict(color='darkgreen', size=11),
                 showlegend=False
             ))
 
-        # Наклономеры на этажах
+        # Наклономеры
         for i, (x, y, z) in enumerate(points[1:], start=1):
             if i-1 >= len(df_floors):
                 continue
@@ -429,9 +423,10 @@ class Visualizer:
             fig.add_trace(go.Scatter3d(
                 x=[x], y=[y], z=[z],
                 mode='markers+text',
-                marker=dict(size=14, color='blue', symbol='square'),
-                text=[f"Этаж {floor}<br>αx={alpha_x:.3f}°<br>αy={alpha_y:.3f}°"],
+                marker=dict(size=16, color='blue', symbol='square', line=dict(color='darkblue', width=2)),
+                text=[f"<b>Этаж {floor}</b><br>αx={alpha_x:.3f}°<br>αy={alpha_y:.3f}°"],
                 textposition='top center',
+                textfont=dict(color='blue', size=11),
                 name=f'Наклономер {floor}'
             ))
 
@@ -439,17 +434,17 @@ class Visualizer:
         fig.add_trace(go.Scatter3d(
             x=[0, top_x], y=[0, top_y], z=[0, top_z],
             mode='lines+markers',
-            line=dict(color='orange', width=6),
-            marker=dict(size=8, color='orange', symbol='diamond'),
+            line=dict(color='darkorange', width=8),
+            marker=dict(size=12, color='darkorange', symbol='diamond'),
             name='Общий крен здания'
         ))
         kren_angle = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
         fig.add_trace(go.Scatter3d(
             x=[top_x], y=[top_y], z=[top_z],
             mode='text',
-            text=[f"Крен: {kren_angle:.2f}°"],
+            text=[f"<b>Крен: {kren_angle:.2f}°</b>"],
             textposition='top center',
-            textfont=dict(color='orange', size=14),
+            textfont=dict(color='darkorange', size=14),
             showlegend=False
         ))
 
@@ -465,9 +460,9 @@ class Visualizer:
                 fig.add_trace(go.Scatter3d(
                     x=[0, dx_os], y=[0, dy_os], z=[0, 0],
                     mode='lines+markers',
-                    line=dict(color='purple', width=5, dash='dash'),
-                    marker=dict(size=10, color='purple', symbol='diamond'),
-                    name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
+                    line=dict(color='purple', width=6, dash='dash'),
+                    marker=dict(size=12, color='purple', symbol='diamond'),
+                    name=f'Крен по осадкам<br>a={a:.2f} мм/м, b={b:.2f} мм/м'
                 ))
 
         # Каркас здания
@@ -485,7 +480,7 @@ class Visualizer:
                 y=[cy, cy + top_y],
                 z=[0, top_z],
                 mode='lines',
-                line=dict(color='black', width=2),
+                line=dict(color='rgba(50,50,50,0.6)', width=2),
                 showlegend=False
             ))
         for z_level, (x_shift, y_shift) in [(0, (0, 0)), (top_z, (top_x, top_y))]:
@@ -496,25 +491,70 @@ class Visualizer:
                 fig.add_trace(go.Scatter3d(
                     x=[x1, x2], y=[y1, y2], z=[z_level, z_level],
                     mode='lines',
-                    line=dict(color='black', width=2),
+                    line=dict(color='rgba(50,50,50,0.6)', width=2),
                     showlegend=False
                 ))
 
         fig.update_layout(
-            title=f"3D-модель здания – цикл {cycle} (верт. масштаб {vertical_scale:.1f})",
+            title=f"<b>3D-модель здания – цикл {cycle}</b> (верт. масштаб {vertical_scale:.1f})",
             scene=dict(
                 xaxis_title="Смещение X, м",
                 yaxis_title="Смещение Y, м",
                 zaxis_title="Высота, м",
                 aspectmode='data',
-                camera=dict(eye=dict(x=1.8, y=1.8, z=1.2))
+                camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
+                bgcolor='rgba(240,240,240,0.9)'
             ),
-            width=900,
-            height=750,
+            width=950,
+            height=800,
             template="plotly_white",
-            legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+            legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02, font=dict(size=12)),
+            margin=dict(l=0, r=0, b=0, t=50)
         )
         return fig
+
+# ------------------------------------------------------------
+# СТРАНИЦА "О ФОРМАТЕ ДАННЫХ" (без генератора примера)
+# ------------------------------------------------------------
+def show_data_format():
+    st.markdown("""
+    ## 📋 Ожидаемый формат исходных данных
+
+    Приложение принимает файл Excel (`.xlsx` или `.xls`) с двумя листами:
+
+    ### 1. Лист **«Наклономер»**
+    Содержит результаты измерений наклономером на разных этажах.
+
+    **Структура:**
+    - Первая строка – заголовки циклов. В ячейках, начиная со столбца **B**, должны быть написаны **Цикл ДД.ММ.ГГГГ** (например, `Цикл 01.01.2025`). Между датами могут быть пустые столбцы (они игнорируются).
+    - Начиная со второй строки – данные по этажам. В **столбце A** – номер этажа (число). В столбцах B, C, D, E, … – **попарно** значения углов αx и αy для каждого цикла. То есть для одного цикла используются **две соседние ячейки**: сначала αx, затем αy.
+
+    **Пример:**
+    |       | A   | B                 | C   | D                 | E   | ... |
+    |-------|-----|-------------------|-----|-------------------|-----|-----|
+    | **1** |     | **Цикл 01.01.2025**|     | **Цикл 10.01.2025**|     |     |
+    | **2** | **5**| 0.12              | 0.05| 0.15              | 0.07| ... |
+    | **3** | **15**| 0.08             | 0.03| 0.09              | 0.04| ... |
+    | **4** | **27**| 0.05             | 0.02| 0.06              | 0.02| ... |
+
+    ### 2. Лист **«Стилобат»** (опционально)
+    Содержит данные осадок угловых марок фундамента.
+
+    **Структура:**
+    - Первая строка – заголовки циклов (аналогично листу «Наклономер»). В столбцах, где написано «Цикл ...», через один-два столбца должны быть значения осадок (можно подписать «Осадка, мм»).
+    - В **столбце A** – номера марок (числа). В строках – значения осадок (в мм) для каждого цикла (по одному числу на цикл).
+
+    **Пример:**
+    |       | A   | B                 | C          | D                 | E          | ... |
+    |-------|-----|-------------------|------------|-------------------|------------|-----|
+    | **1** |     | **Цикл 01.01.2025**| **Осадка** | **Цикл 10.01.2025**| **Осадка** |     |
+    | **2** | **1**|                   | 0.0        |                   | 0.5        | ... |
+    | **3** | **4**|                   | 0.2        |                   | 0.7        | ... |
+    | **4** | **11**|                  | 0.1        |                   | 0.6        | ... |
+    | **5** | **14**|                  | 0.3        |                   | 0.8        | ... |
+
+    > **Важно:** Нумерация марок должна соответствовать углам здания: сначала нижний левый, затем нижний правый, затем верхний левый, затем верхний правый.
+    """)
 
 # ------------------------------------------------------------
 # ГЛАВНОЕ ПРИЛОЖЕНИЕ
@@ -524,12 +564,22 @@ def main():
     st.title("📐 3D-модель здания по данным накладного инклинометра и осадок")
     st.markdown("Загрузите Excel-файл и настройте параметры – модель построится автоматически.")
 
-    # Инициализация состояния
     init_session_state()
 
-    # Боковая панель
-    st.sidebar.header("Загрузка файла")
-    uploaded_file = st.file_uploader("Выберите Excel-файл", type=["xlsx", "xls"])
+    # Вкладки
+    tab_data, tab_model, tab_info, tab_format = st.tabs([
+        "📊 Данные и параметры",
+        "🏢 3D-модель",
+        "📘 О приборе",
+        "📋 Формат данных"
+    ])
+
+    # --------------------- ВКЛАДКА "ФОРМАТ ДАННЫХ" ---------------------
+    with tab_format:
+        show_data_format()
+
+    # --------------------- ЗАГРУЗКА ФАЙЛА ---------------------
+    uploaded_file = st.sidebar.file_uploader("Выберите Excel-файл", type=["xlsx", "xls"])
 
     if uploaded_file is not None:
         file_bytes = uploaded_file.read()
@@ -559,7 +609,7 @@ def main():
         st.session_state["cycle_display_map"] = cycle_display
         st.session_state["file_loaded"] = True
 
-        # Параметры модели
+        # --------------------- ПАРАМЕТРЫ В БОКОВОЙ ПАНЕЛИ ---------------------
         st.sidebar.header("Параметры модели")
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
@@ -596,7 +646,7 @@ def main():
         building_width = st.session_state["building_width"]
         vertical_scale = st.session_state["vertical_scale"]
 
-        # Обработка данных (с кэшированием)
+        # --------------------- ОБРАБОТКА ДАННЫХ (АВТОМАТИЧЕСКИ ПРИ ИЗМЕНЕНИИ ПАРАМЕТРОВ) ---------------------
         @st.cache_data
         def process_raw(df, zero_cycle, a0x, a0y, L):
             return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L)
@@ -611,7 +661,7 @@ def main():
         df_filtered = process_filtered(df_raw, filter_type, filter_window, L)
         st.session_state["df_incl_filtered"] = df_filtered
 
-        # Осадки
+        # Осадки (с явной кнопкой, так как требует парсинга)
         if "Стилобат" in all_sheets:
             st.sidebar.subheader("Осадки")
             if st.sidebar.checkbox("Рассчитать крен по осадкам", value=False):
@@ -630,10 +680,8 @@ def main():
         else:
             st.session_state["df_sett_angles"] = None
 
-        # Вкладки
-        tab1, tab2, tab3 = st.tabs(["📊 Данные и параметры", "🏢 3D-модель", "📘 О приборе"])
-
-        with tab1:
+        # --------------------- ВКЛАДКА "ДАННЫЕ И ПАРАМЕТРЫ" ---------------------
+        with tab_data:
             st.subheader("Данные наклономера")
             show_floors = st.multiselect("Показать этажи", all_floors, default=selected_floors, key="show_floors_tab1")
             if show_floors:
@@ -659,7 +707,8 @@ def main():
                 st.subheader("Крен по осадкам")
                 st.dataframe(st.session_state["df_sett_angles"], use_container_width=True)
 
-        with tab2:
+        # --------------------- ВКЛАДКА "3D-МОДЕЛЬ" ---------------------
+        with tab_model:
             st.subheader("3D-модель здания")
             if len(cycles) == 0:
                 st.warning("Нет циклов для отображения.")
@@ -669,7 +718,6 @@ def main():
                                               format_func=lambda x: cycle_display[x], key="cycle_3d")
                 st.session_state["selected_cycle_key"] = selected_cycle
 
-                # Расчёт смещений и получение df_cycle
                 result = DataProcessor.calculate_displacement(
                     df_filtered, selected_cycle, selected_floors, L, vertical_scale
                 )
@@ -684,7 +732,18 @@ def main():
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-        with tab3:
+                    # Дополнительная информация о крене
+                    st.markdown("### 📐 Результаты для выбранного цикла")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Общий крен здания", f"{np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z)):.3f}°")
+                    with col2:
+                        st.metric("Смещение верха (X)", f"{top_x:.3f} м")
+                    with col3:
+                        st.metric("Смещение верха (Y)", f"{top_y:.3f} м")
+
+        # --------------------- ВКЛАДКА "О ПРИБОРЕ" ---------------------
+        with tab_info:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
             st.markdown("""
             **Инклинометр накладной портативный** предназначен для ручных измерений угла наклона (крена) различных конструкций зданий и сооружений в точке монтажа измерительной пластины.  
@@ -727,6 +786,9 @@ def main():
 
     else:
         st.info("👆 Загрузите Excel-файл для начала работы.")
+        # Показываем информацию о формате даже без загрузки
+        with tab_format:
+            show_data_format()
 
 if __name__ == "__main__":
     main()
