@@ -28,7 +28,7 @@ DEFAULT_ALPHA0_X = 0.0
 DEFAULT_ALPHA0_Y = 0.0
 
 # ------------------------------------------------------------
-# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ
+# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ (только необходимые ключи)
 # ------------------------------------------------------------
 def init_session_state():
     defaults = {
@@ -49,13 +49,14 @@ def init_session_state():
         'cycles': [],
         'cycle_display_map': {},
         'file_loaded': False,
+        'correct_by_sett': False,      # флаг коррекции по осадкам
     }
     for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
 
 # ------------------------------------------------------------
-# ПАРСЕР EXCEL
+# ПАРСЕР EXCEL (без изменений)
 # ------------------------------------------------------------
 class ExcelParser:
     @staticmethod
@@ -276,12 +277,19 @@ class ExcelParser:
         return pd.DataFrame(results)
 
 # ------------------------------------------------------------
-# ОБРАБОТЧИК ДАННЫХ
+# ОБРАБОТЧИК ДАННЫХ (с учётом коррекции по осадкам)
 # ------------------------------------------------------------
 class DataProcessor:
     @staticmethod
     def apply_parameters(df_incl: pd.DataFrame, zero_cycle: str,
-                         alpha0_x: float, alpha0_y: float, L: float) -> pd.DataFrame:
+                         alpha0_x: float, alpha0_y: float, L: float,
+                         df_sett_angles: Optional[pd.DataFrame] = None,
+                         correct_by_sett: bool = False) -> pd.DataFrame:
+        """
+        Вычисляет абсолютные углы и смещения.
+        Если correct_by_sett=True и df_sett_angles не пуст, то вычитает крен фундамента
+        (a_град, b_град) из абсолютных углов для каждого цикла.
+        """
         df = df_incl.copy()
         zero_data = df[df['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(
             columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'}
@@ -292,8 +300,28 @@ class DataProcessor:
             df['αx0_inc'] = df['αx0_inc'].fillna(0)
             df['αy0_inc'] = df['αy0_inc'].fillna(0)
 
+        # Базовые абсолютные углы
         df['αx_abs'] = df['αx'] - df['αx0_inc'] + alpha0_x
         df['αy_abs'] = df['αy'] - df['αy0_inc'] + alpha0_y
+
+        # Коррекция по осадкам (если включена и есть данные)
+        if correct_by_sett and df_sett_angles is not None and not df_sett_angles.empty:
+            # Присоединяем данные осадок по циклу
+            sett_corr = df_sett_angles[['Цикл', 'a_град', 'b_град']].copy()
+            # Для нулевого цикла осадок коррекция = 0 (обычно в нулевом цикле a_град, b_град = 0, но на всякий случай)
+            # Однако в данных осадок нулевой цикл отсутствует (мы его исключили при расчёте)
+            # Значит, для циклов, которых нет в sett_corr, коррекция не применяется.
+            df = df.merge(sett_corr, on='Цикл', how='left')
+            # Заменяем NaN на 0 (т.е. для циклов без осадок коррекция = 0)
+            df['a_град'] = df['a_град'].fillna(0)
+            df['b_град'] = df['b_град'].fillna(0)
+            # Вычитаем крен фундамента
+            df['αx_abs'] = df['αx_abs'] - df['a_град']
+            df['αy_abs'] = df['αy_abs'] - df['b_град']
+            # Удаляем временные колонки
+            df.drop(columns=['a_град', 'b_град'], inplace=True)
+
+        # Вычисляем смещения
         df['Смещение X'] = L * np.sin(np.radians(df['αx_abs']))
         df['Смещение Y'] = L * np.sin(np.radians(df['αy_abs']))
         return df
@@ -356,14 +384,13 @@ class DataProcessor:
         return points, top_x, top_y, top_z, max_z, df_cycle
 
 # ------------------------------------------------------------
-# ВИЗУАЛИЗАТОР (УЛУЧШЕННАЯ 3D-МОДЕЛЬ)
+# ВИЗУАЛИЗАТОР (с улучшенной 3D-моделью)
 # ------------------------------------------------------------
 class Visualizer:
     @staticmethod
     def plot_3d(points, top_x, top_y, top_z, max_z,
                 df_cycle, cycle, building_length, building_width,
                 vertical_scale, floors, df_sett_angles=None):
-        # Фильтруем df_floors
         if floors:
             df_floors = df_cycle[df_cycle['Этаж'].isin(floors)].sort_values('Этаж')
         else:
@@ -448,7 +475,7 @@ class Visualizer:
             showlegend=False
         ))
 
-        # Крен по осадкам
+        # Крен по осадкам (визуализация)
         if df_sett_angles is not None and not df_sett_angles.empty:
             sett_row = df_sett_angles[df_sett_angles['Цикл'] == cycle]
             if not sett_row.empty:
@@ -514,7 +541,7 @@ class Visualizer:
         return fig
 
 # ------------------------------------------------------------
-# СТРАНИЦА "О ФОРМАТЕ ДАННЫХ" (без генератора примера)
+# СТРАНИЦА "О ФОРМАТЕ ДАННЫХ"
 # ------------------------------------------------------------
 def show_data_format():
     st.markdown("""
@@ -566,7 +593,6 @@ def main():
 
     init_session_state()
 
-    # Вкладки
     tab_data, tab_model, tab_info, tab_format = st.tabs([
         "📊 Данные и параметры",
         "🏢 3D-модель",
@@ -574,11 +600,9 @@ def main():
         "📋 Формат данных"
     ])
 
-    # --------------------- ВКЛАДКА "ФОРМАТ ДАННЫХ" ---------------------
     with tab_format:
         show_data_format()
 
-    # --------------------- ЗАГРУЗКА ФАЙЛА ---------------------
     uploaded_file = st.sidebar.file_uploader("Выберите Excel-файл", type=["xlsx", "xls"])
 
     if uploaded_file is not None:
@@ -594,7 +618,6 @@ def main():
             st.error("Лист 'Наклономер' не найден. Проверьте файл.")
             st.stop()
 
-        # Парсинг наклономера
         df_incl = ExcelParser.parse_inclinometer(file_bytes, "Наклономер")
         if df_incl is None:
             st.stop()
@@ -609,7 +632,6 @@ def main():
         st.session_state["cycle_display_map"] = cycle_display
         st.session_state["file_loaded"] = True
 
-        # --------------------- ПАРАМЕТРЫ В БОКОВОЙ ПАНЕЛИ ---------------------
         st.sidebar.header("Параметры модели")
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
@@ -619,8 +641,18 @@ def main():
             key="zero_cycle_select"
         )
         L = st.sidebar.number_input("Высота этажа L, м", value=st.session_state["L"], step=0.1, format="%.1f", key="L_input")
+
+        st.sidebar.subheader("Поправки начального наклона")
         alpha0_x = st.sidebar.number_input("αx0, °", value=st.session_state["alpha0_x"], step=0.001, format="%.3f", key="alpha0_x")
         alpha0_y = st.sidebar.number_input("αy0, °", value=st.session_state["alpha0_y"], step=0.001, format="%.3f", key="alpha0_y")
+
+        st.sidebar.subheader("Коррекция по осадкам")
+        correct_by_sett = st.sidebar.checkbox("Вычитать крен фундамента из показаний наклономера", 
+                                              value=st.session_state["correct_by_sett"], 
+                                              key="correct_by_sett",
+                                              help="Если включено, из абсолютных углов наклономера вычитаются углы крена фундамента (a_град, b_град) из данных осадок для каждого цикла.")
+        if correct_by_sett and st.session_state["df_sett_angles"] is None:
+            st.sidebar.warning("Сначала рассчитайте крен по осадкам (раздел ниже).")
 
         st.sidebar.subheader("Фильтрация данных")
         filter_type = st.sidebar.selectbox("Тип фильтра", FILTER_TYPES, index=FILTER_TYPES.index(st.session_state["filter_type"]), key="filter_type")
@@ -645,26 +677,13 @@ def main():
         building_length = st.session_state["building_length"]
         building_width = st.session_state["building_width"]
         vertical_scale = st.session_state["vertical_scale"]
+        correct_by_sett = st.session_state["correct_by_sett"]
 
-        # --------------------- ОБРАБОТКА ДАННЫХ (АВТОМАТИЧЕСКИ ПРИ ИЗМЕНЕНИИ ПАРАМЕТРОВ) ---------------------
-        @st.cache_data
-        def process_raw(df, zero_cycle, a0x, a0y, L):
-            return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L)
-
-        df_raw = process_raw(df_incl, zero_cycle, alpha0_x, alpha0_y, L)
-        st.session_state["df_incl_raw"] = df_raw
-
-        @st.cache_data
-        def process_filtered(df_raw, filter_type, filter_window, L):
-            return DataProcessor.filter_data(df_raw, filter_type, filter_window, L)
-
-        df_filtered = process_filtered(df_raw, filter_type, filter_window, L)
-        st.session_state["df_incl_filtered"] = df_filtered
-
-        # Осадки (с явной кнопкой, так как требует парсинга)
+        # ---------- ЗАГРУЗКА ОСАДОК (если лист есть) ----------
+        df_sett = st.session_state["df_sett_angles"]  # уже может быть загружен ранее
         if "Стилобат" in all_sheets:
             st.sidebar.subheader("Осадки")
-            if st.sidebar.checkbox("Рассчитать крен по осадкам", value=False):
+            if st.sidebar.checkbox("Рассчитать крен по осадкам", value=df_sett is not None):
                 corner_marks = st.sidebar.text_input("Марки (через запятую)", "1,4,11,14")
                 L_fund = st.sidebar.number_input("Длина фундамента, м", 70.46, key="L_fund")
                 B_fund = st.sidebar.number_input("Ширина фундамента, м", 18.69, key="B_fund")
@@ -679,8 +698,24 @@ def main():
                             st.success("Углы по осадкам рассчитаны.")
         else:
             st.session_state["df_sett_angles"] = None
+            df_sett = None
 
-        # --------------------- ВКЛАДКА "ДАННЫЕ И ПАРАМЕТРЫ" ---------------------
+        # ---------- ОБРАБОТКА ДАННЫХ С КЭШИРОВАНИЕМ ----------
+        @st.cache_data
+        def process_raw(df, zero_cycle, a0x, a0y, L, df_sett, correct):
+            return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L, df_sett, correct)
+
+        df_raw = process_raw(df_incl, zero_cycle, alpha0_x, alpha0_y, L, df_sett, correct_by_sett)
+        st.session_state["df_incl_raw"] = df_raw
+
+        @st.cache_data
+        def process_filtered(df_raw, filter_type, filter_window, L):
+            return DataProcessor.filter_data(df_raw, filter_type, filter_window, L)
+
+        df_filtered = process_filtered(df_raw, filter_type, filter_window, L)
+        st.session_state["df_incl_filtered"] = df_filtered
+
+        # ---------- ВКЛАДКА "ДАННЫЕ И ПАРАМЕТРЫ" ----------
         with tab_data:
             st.subheader("Данные наклономера")
             show_floors = st.multiselect("Показать этажи", all_floors, default=selected_floors, key="show_floors_tab1")
@@ -702,12 +737,14 @@ def main():
                         st.dataframe(df_raw_pivot, use_container_width=True, height=300)
 
             st.caption(f"Фильтр: {filter_type}, окно = {filter_window}")
+            if correct_by_sett and df_sett is not None:
+                st.success("✅ Коррекция по осадкам включена – из абсолютных углов вычитается крен фундамента.")
 
-            if st.session_state["df_sett_angles"] is not None:
+            if df_sett is not None:
                 st.subheader("Крен по осадкам")
-                st.dataframe(st.session_state["df_sett_angles"], use_container_width=True)
+                st.dataframe(df_sett, use_container_width=True)
 
-        # --------------------- ВКЛАДКА "3D-МОДЕЛЬ" ---------------------
+        # ---------- ВКЛАДКА "3D-МОДЕЛЬ" ----------
         with tab_model:
             st.subheader("3D-модель здания")
             if len(cycles) == 0:
@@ -728,11 +765,10 @@ def main():
                     fig = Visualizer.plot_3d(
                         points, top_x, top_y, top_z, max_z,
                         df_cycle, selected_cycle, building_length, building_width,
-                        vertical_scale, selected_floors, st.session_state["df_sett_angles"]
+                        vertical_scale, selected_floors, df_sett
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # Дополнительная информация о крене
                     st.markdown("### 📐 Результаты для выбранного цикла")
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -742,7 +778,7 @@ def main():
                     with col3:
                         st.metric("Смещение верха (Y)", f"{top_y:.3f} м")
 
-        # --------------------- ВКЛАДКА "О ПРИБОРЕ" ---------------------
+        # ---------- ВКЛАДКА "О ПРИБОРЕ" ----------
         with tab_info:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
             st.markdown("""
@@ -786,7 +822,6 @@ def main():
 
     else:
         st.info("👆 Загрузите Excel-файл для начала работы.")
-        # Показываем информацию о формате даже без загрузки
         with tab_format:
             show_data_format()
 
