@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_BUILDING_LENGTH = 70.46
 DEFAULT_BUILDING_WIDTH = 18.69
 DEFAULT_VERTICAL_SCALE = 1.0
-REQUIRED_SHEETS = ["Наклономер", "Стилобат"]  # фактически обязателен только "Наклономер"
 MAX_ANGLE_DEG = 30
 DEFAULT_FILTER_WINDOW = 3
 FILTER_TYPES = ["Нет", "Скользящее среднее", "Медианный фильтр"]
@@ -29,53 +28,43 @@ DEFAULT_ALPHA0_X = 0.0
 DEFAULT_ALPHA0_Y = 0.0
 
 # ------------------------------------------------------------
-# КЛАСС ДЛЯ УПРАВЛЕНИЯ СОСТОЯНИЕМ
+# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ
 # ------------------------------------------------------------
-class AppState:
-    """Централизованное хранение состояния приложения."""
-    def __init__(self):
-        self.building_length = DEFAULT_BUILDING_LENGTH
-        self.building_width = DEFAULT_BUILDING_WIDTH
-        self.vertical_scale = DEFAULT_VERTICAL_SCALE
-        self.selected_floors = []
-        self.zero_cycle = None
-        self.L = DEFAULT_L
-        self.alpha0_x = DEFAULT_ALPHA0_X
-        self.alpha0_y = DEFAULT_ALPHA0_Y
-        self.selected_cycle_key = None
-        self.filter_type = "Нет"
-        self.filter_window = DEFAULT_FILTER_WINDOW
-
-        # Данные (заполняются после загрузки)
-        self.df_incl_raw = None          # исходные данные после apply_parameters (без фильтра)
-        self.df_incl_filtered = None     # после фильтрации
-        self.df_sett_angles = None       # углы по осадкам
-        self.cycles = []                 # список уникальных циклов
-        self.cycle_display_map = {}      # отображение ключ -> полное имя
-
-    def update_from_session(self):
-        """Загружает значения из st.session_state (для совместимости)."""
-        for key, value in st.session_state.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-
-    def save_to_session(self):
-        """Сохраняет текущие значения в st.session_state."""
-        for key, value in self.__dict__.items():
-            st.session_state[key] = value
+def init_session_state():
+    defaults = {
+        'building_length': DEFAULT_BUILDING_LENGTH,
+        'building_width': DEFAULT_BUILDING_WIDTH,
+        'vertical_scale': DEFAULT_VERTICAL_SCALE,
+        'selected_floors': [],
+        'zero_cycle': None,
+        'L': DEFAULT_L,
+        'alpha0_x': DEFAULT_ALPHA0_X,
+        'alpha0_y': DEFAULT_ALPHA0_Y,
+        'selected_cycle_key': None,
+        'filter_type': 'Нет',
+        'filter_window': DEFAULT_FILTER_WINDOW,
+        'df_incl_raw': None,
+        'df_incl_filtered': None,
+        'df_sett_angles': None,
+        'cycles': [],
+        'cycle_display_map': {},
+        'file_loaded': False,
+    }
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
 
 # ------------------------------------------------------------
 # ПАРСЕР EXCEL
 # ------------------------------------------------------------
 class ExcelParser:
     @staticmethod
-    @st.cache_resource  # <- ИСПРАВЛЕНО: cache_resource вместо cache_data
+    @st.cache_resource
     def load_excel(file_bytes: bytes) -> pd.ExcelFile:
         return pd.ExcelFile(io.BytesIO(file_bytes))
 
     @staticmethod
     def _extract_cycle_headers(df_raw: pd.DataFrame) -> Tuple[Optional[int], List[str]]:
-        """Находит строку с заголовками циклов и извлекает названия."""
         for idx, row in df_raw.iterrows():
             row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
             if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
@@ -89,7 +78,6 @@ class ExcelParser:
 
     @staticmethod
     def _parse_cycle_labels(cycle_names: List[str]) -> List[str]:
-        """Преобразует названия в ключи YYYY-MM-DD."""
         labels = []
         for name in cycle_names:
             match = re.search(r'(\d{2}\.\d{2}\.\d{4})', name)
@@ -105,10 +93,6 @@ class ExcelParser:
 
     @staticmethod
     def _find_floor_rows(df_raw: pd.DataFrame, cycle_count: int) -> Dict[int, int]:
-        """
-        Ищет строки с данными этажей.
-        Критерий: в первом столбце – число (номер этажа), в строке достаточно чисел (не менее 2 * cycle_count).
-        """
         floor_rows = {}
         for idx, row in df_raw.iterrows():
             first_val = row.iloc[0] if len(row) > 0 else None
@@ -125,17 +109,12 @@ class ExcelParser:
 
     @staticmethod
     def _extract_angle_pairs(row: pd.Series) -> List[Tuple[float, float]]:
-        """Извлекает пары (αx, αy) из строки (начиная со второго столбца)."""
         values = [float(v) for v in row.iloc[1:] if pd.notna(v) and isinstance(v, (int, float))]
         pairs = [(values[i], values[i+1]) for i in range(0, len(values)-1, 2)]
         return pairs
 
     @classmethod
     def parse_inclinometer(cls, file_bytes: bytes, sheet_name: str) -> Optional[pd.DataFrame]:
-        """
-        Парсит лист с наклономером.
-        Возвращает DataFrame с колонками: Цикл, Цикл_полное, Этаж, αx, αy.
-        """
         try:
             df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
         except Exception as e:
@@ -190,9 +169,6 @@ class ExcelParser:
     def parse_settlement(cls, file_bytes: bytes, sheet_name: str,
                          corner_marks: List[str], L_fund: float, B_fund: float,
                          mark_col: int = 0) -> Optional[pd.DataFrame]:
-        """
-        Парсит лист с осадками, возвращает DataFrame с углами крена по осадкам.
-        """
         try:
             df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
         except Exception as e:
@@ -208,7 +184,6 @@ class ExcelParser:
             st.error("Не удалось распознать даты циклов в осадках.")
             return None
 
-        # Ищем столбцы с осадками
         osad_cols = {}
         for col_idx, cell in df_raw.iloc[header_row, :].items():
             if pd.notna(cell) and 'осадк' in str(cell).lower():
@@ -301,7 +276,7 @@ class ExcelParser:
         return pd.DataFrame(results)
 
 # ------------------------------------------------------------
-# ОБРАБОТЧИК ДАННЫХ (ПАРАМЕТРЫ + ФИЛЬТРАЦИЯ)
+# ОБРАБОТЧИК ДАННЫХ
 # ------------------------------------------------------------
 class DataProcessor:
     @staticmethod
@@ -526,9 +501,10 @@ def main():
     st.title("📐 3D-модель здания по данным накладного инклинометра и осадок")
     st.markdown("Загрузите Excel-файл и настройте параметры – модель построится автоматически.")
 
-    state = AppState()
-    state.update_from_session()
+    # Инициализация состояния
+    init_session_state()
 
+    # Боковая панель
     st.sidebar.header("Загрузка файла")
     uploaded_file = st.file_uploader("Выберите Excel-файл", type=["xlsx", "xls"])
 
@@ -545,6 +521,7 @@ def main():
             st.error("Лист 'Наклономер' не найден. Проверьте файл.")
             st.stop()
 
+        # Парсинг наклономера
         df_incl = ExcelParser.parse_inclinometer(file_bytes, "Наклономер")
         if df_incl is None:
             st.stop()
@@ -555,11 +532,13 @@ def main():
             st.stop()
 
         cycle_display = {c: df_incl[df_incl['Цикл'] == c]['Цикл_полное'].iloc[0] for c in cycles}
-        state.cycles = cycles
-        state.cycle_display_map = cycle_display
+        st.session_state.cycles = cycles
+        st.session_state.cycle_display_map = cycle_display
+        st.session_state.file_loaded = True
 
+        # Параметры модели
         st.sidebar.header("Параметры модели")
-        zero_cycle_idx = cycles.index(state.zero_cycle) if state.zero_cycle in cycles else 0
+        zero_cycle_idx = cycles.index(st.session_state.zero_cycle) if st.session_state.zero_cycle in cycles else 0
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
             options=cycles,
@@ -567,48 +546,50 @@ def main():
             format_func=lambda x: cycle_display[x],
             key="zero_cycle_select"
         )
-        L = st.sidebar.number_input("Высота этажа L, м", value=state.L, step=0.1, format="%.1f", key="L_input")
-        alpha0_x = st.sidebar.number_input("αx0, °", value=state.alpha0_x, step=0.001, format="%.3f", key="alpha0_x")
-        alpha0_y = st.sidebar.number_input("αy0, °", value=state.alpha0_y, step=0.001, format="%.3f", key="alpha0_y")
+        L = st.sidebar.number_input("Высота этажа L, м", value=st.session_state.L, step=0.1, format="%.1f", key="L_input")
+        alpha0_x = st.sidebar.number_input("αx0, °", value=st.session_state.alpha0_x, step=0.001, format="%.3f", key="alpha0_x")
+        alpha0_y = st.sidebar.number_input("αy0, °", value=st.session_state.alpha0_y, step=0.001, format="%.3f", key="alpha0_y")
 
         st.sidebar.subheader("Фильтрация данных")
-        filter_type = st.sidebar.selectbox("Тип фильтра", FILTER_TYPES, index=FILTER_TYPES.index(state.filter_type), key="filter_type")
+        filter_type = st.sidebar.selectbox("Тип фильтра", FILTER_TYPES, index=FILTER_TYPES.index(st.session_state.filter_type), key="filter_type")
         filter_window = st.sidebar.number_input("Размер окна (циклы)", min_value=2, max_value=15,
-                                                value=state.filter_window, step=1, key="filter_window")
+                                                value=st.session_state.filter_window, step=1, key="filter_window")
 
         all_floors = sorted(df_incl['Этаж'].unique())
-        selected_floors = st.sidebar.multiselect("Выберите этажи", all_floors, default=all_floors, key="selected_floors")
+        selected_floors = st.sidebar.multiselect("Выберите этажи", all_floors, default=st.session_state.selected_floors or all_floors, key="selected_floors")
 
-        building_length = st.sidebar.number_input("Длина здания, м", value=state.building_length, step=0.1, key="building_length")
-        building_width = st.sidebar.number_input("Ширина здания, м", value=state.building_width, step=0.1, key="building_width")
-        vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, state.vertical_scale, 0.1, key="vertical_scale")
+        building_length = st.sidebar.number_input("Длина здания, м", value=st.session_state.building_length, step=0.1, key="building_length")
+        building_width = st.sidebar.number_input("Ширина здания, м", value=st.session_state.building_width, step=0.1, key="building_width")
+        vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, st.session_state.vertical_scale, 0.1, key="vertical_scale")
 
-        state.zero_cycle = zero_cycle
-        state.L = L
-        state.alpha0_x = alpha0_x
-        state.alpha0_y = alpha0_y
-        state.filter_type = filter_type
-        state.filter_window = filter_window
-        state.selected_floors = selected_floors
-        state.building_length = building_length
-        state.building_width = building_width
-        state.vertical_scale = vertical_scale
-        state.save_to_session()
+        # Обновляем состояние (только простые параметры)
+        st.session_state.zero_cycle = zero_cycle
+        st.session_state.L = L
+        st.session_state.alpha0_x = alpha0_x
+        st.session_state.alpha0_y = alpha0_y
+        st.session_state.filter_type = filter_type
+        st.session_state.filter_window = filter_window
+        st.session_state.selected_floors = selected_floors
+        st.session_state.building_length = building_length
+        st.session_state.building_width = building_width
+        st.session_state.vertical_scale = vertical_scale
 
+        # Обработка данных (с кэшированием)
         @st.cache_data
         def process_raw(df, zero_cycle, a0x, a0y, L):
             return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L)
 
         df_raw = process_raw(df_incl, zero_cycle, alpha0_x, alpha0_y, L)
-        state.df_incl_raw = df_raw
+        st.session_state.df_incl_raw = df_raw
 
         @st.cache_data
         def process_filtered(df_raw, filter_type, filter_window, L):
             return DataProcessor.filter_data(df_raw, filter_type, filter_window, L)
 
         df_filtered = process_filtered(df_raw, filter_type, filter_window, L)
-        state.df_incl_filtered = df_filtered
+        st.session_state.df_incl_filtered = df_filtered
 
+        # Осадки
         if "Стилобат" in all_sheets:
             st.sidebar.subheader("Осадки")
             if st.sidebar.checkbox("Рассчитать крен по осадкам", value=False):
@@ -622,12 +603,12 @@ def main():
                     else:
                         df_sett = ExcelParser.parse_settlement(file_bytes, "Стилобат", marks, L_fund, B_fund)
                         if df_sett is not None:
-                            state.df_sett_angles = df_sett
                             st.session_state.df_sett_angles = df_sett
                             st.success("Углы по осадкам рассчитаны.")
         else:
-            state.df_sett_angles = None
+            st.session_state.df_sett_angles = None
 
+        # Вкладки
         tab1, tab2, tab3 = st.tabs(["📊 Данные и параметры", "🏢 3D-модель", "📘 О приборе"])
 
         with tab1:
@@ -652,20 +633,19 @@ def main():
 
             st.caption(f"Фильтр: {filter_type}, окно = {filter_window}")
 
-            if state.df_sett_angles is not None:
+            if st.session_state.df_sett_angles is not None:
                 st.subheader("Крен по осадкам")
-                st.dataframe(state.df_sett_angles, use_container_width=True)
+                st.dataframe(st.session_state.df_sett_angles, use_container_width=True)
 
         with tab2:
             st.subheader("3D-модель здания")
             if len(cycles) == 0:
                 st.warning("Нет циклов для отображения.")
             else:
-                default_cycle = state.selected_cycle_key if state.selected_cycle_key in cycles else cycles[-1]
+                default_cycle = st.session_state.selected_cycle_key if st.session_state.selected_cycle_key in cycles else cycles[-1]
                 selected_cycle = st.selectbox("Выберите цикл", cycles, index=cycles.index(default_cycle),
                                               format_func=lambda x: cycle_display[x], key="cycle_3d")
-                state.selected_cycle_key = selected_cycle
-                state.save_to_session()
+                st.session_state.selected_cycle_key = selected_cycle
 
                 points, top_x, top_y, top_z, max_z = DataProcessor.calculate_displacement(
                     df_filtered, selected_cycle, selected_floors, L, vertical_scale
@@ -678,7 +658,7 @@ def main():
                     fig = Visualizer.plot_3d(
                         points, top_x, top_y, top_z, max_z,
                         df_floors, selected_cycle, building_length, building_width,
-                        vertical_scale, state.df_sett_angles
+                        vertical_scale, st.session_state.df_sett_angles
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
