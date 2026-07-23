@@ -888,137 +888,206 @@ if uploaded_file is not None:
         cycle_display_map = get_cycle_display_options(df_incl)
         cycle_keys = list(cycle_display_map.keys())
 
+        # ============================================================
+        # НОВАЯ ВКЛАДКА "ДАННЫЕ И ПАРАМЕТРЫ" (ПОЛНОСТЬЮ ПЕРЕРАБОТАНА)
+        # ============================================================
         with tab1:
             if len(cycle_keys) == 0:
                 st.error("Нет циклов в данных наклономера.")
                 st.stop()
 
-            # ===== ВОТ ЗДЕСЬ ДОБАВЛЯЕМ ОТОБРАЖЕНИЕ ДАННЫХ НАКЛОНОМЕРА =====
-            with st.expander("📋 Данные наклономера (сырые значения)", expanded=False):
-                df_display = df_incl.copy()
-                df_display['Цикл'] = df_display['Цикл'].map(cycle_display_map)
-                st.dataframe(df_display, use_container_width=True)
-                st.caption(f"Всего записей: {len(df_display)}")
+            # --- Сводка по данным (метрики) ---
+            col_metrics1, col_metrics2, col_metrics3, col_metrics4 = st.columns(4)
+            with col_metrics1:
+                st.metric("📋 Всего циклов", len(cycle_keys))
+            with col_metrics2:
+                st.metric("🏗️ Всего этажей", len(df_incl['Этаж'].unique()))
+            with col_metrics3:
+                first_date = cycle_keys[0] if cycle_keys else "—"
+                st.metric("📅 Первый цикл", first_date)
+            with col_metrics4:
+                last_date = cycle_keys[-1] if cycle_keys else "—"
+                st.metric("📅 Последний цикл", last_date)
 
-            st.subheader("⚙️ Параметры расчёта")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                zero_cycle_display = st.selectbox(
-                    "Нулевой цикл",
-                    options=[cycle_display_map[k] for k in cycle_keys],
-                    index=0
+            st.divider()
+
+            # --- Основная область: параметры слева, данные справа ---
+            col_left, col_right = st.columns([1, 1.5], gap="large")
+
+            with col_left:
+                st.subheader("⚙️ Параметры расчёта")
+                with st.container(border=True):
+                    zero_cycle_display = st.selectbox(
+                        "**Нулевой цикл**",
+                        options=[cycle_display_map[k] for k in cycle_keys],
+                        index=0,
+                        help="Цикл, относительно которого считаются приросты углов наклона."
+                    )
+                    zero_cycle = [k for k, v in cycle_display_map.items() if v == zero_cycle_display][0]
+
+                    col_a1, col_a2 = st.columns(2)
+                    with col_a1:
+                        alpha0_x = st.number_input(
+                            "**αx0, °**",
+                            value=0.0,
+                            step=0.001,
+                            format="%.3f",
+                            help="Начальный угол наклона по оси X (корректировка)."
+                        )
+                    with col_a2:
+                        alpha0_y = st.number_input(
+                            "**αy0, °**",
+                            value=0.0,
+                            step=0.001,
+                            format="%.3f",
+                            help="Начальный угол наклона по оси Y (корректировка)."
+                        )
+
+                    L = st.number_input(
+                        "**Высота этажа L, м**",
+                        value=3.0,
+                        step=0.1,
+                        format="%.1f",
+                        help="Высота одного этажа для пересчёта углов в смещения."
+                    )
+
+                    # Кнопка применения (на случай, если нужно явно обновить)
+                    if st.button("🔄 Применить параметры", type="primary"):
+                        st.session_state.zero_cycle = zero_cycle
+                        st.session_state.L = L
+                        st.success("Параметры обновлены!")
+
+            with col_right:
+                st.subheader("📋 Данные наклономера")
+                # Фильтр по этажам
+                available_floors_for_table = sorted(df_incl['Этаж'].unique())
+                selected_floors_for_table = st.multiselect(
+                    "Показать этажи",
+                    options=available_floors_for_table,
+                    default=available_floors_for_table,
+                    key="table_floor_filter"
                 )
-                zero_cycle = [k for k, v in cycle_display_map.items() if v == zero_cycle_display][0]
-            with col2:
-                alpha0_x = st.number_input("Начальный угол X (αx0), °", value=0.0, step=0.001, format="%.3f")
-            with col3:
-                alpha0_y = st.number_input("Начальный угол Y (αy0), °", value=0.0, step=0.001, format="%.3f")
-            with col4:
-                L = st.number_input("Высота этажа (L), м", value=3.0, step=0.1, format="%.1f")
 
-            zero_data = df_incl[df_incl['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(
-                columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'}
-            )
-            df_incl = df_incl.merge(zero_data, on='Этаж', how='left')
-            df_incl['αx_abs'] = df_incl['αx'] - df_incl['αx0_inc'] + alpha0_x
-            df_incl['αy_abs'] = df_incl['αy'] - df_incl['αy0_inc'] + alpha0_y
-            df_incl['Смещение X'] = L * np.sin(np.radians(df_incl['αx_abs']))
-            df_incl['Смещение Y'] = L * np.sin(np.radians(df_incl['αy_abs']))
+                if selected_floors_for_table:
+                    df_filtered = df_incl[df_incl['Этаж'].isin(selected_floors_for_table)].copy()
+                    # Подготовка сводной таблицы: строки – этажи, колонки – циклы, значения – углы
+                    # Для компактности покажем две таблицы: для αx и αy
+                    pivot_x = df_filtered.pivot(index='Этаж', columns='Цикл', values='αx')
+                    pivot_y = df_filtered.pivot(index='Этаж', columns='Цикл', values='αy')
 
-            st.session_state.zero_cycle = zero_cycle
-            st.session_state.L = L
+                    # Переименовываем колонки в человеческий формат
+                    pivot_x.columns = [cycle_display_map.get(c, c) for c in pivot_x.columns]
+                    pivot_y.columns = [cycle_display_map.get(c, c) for c in pivot_y.columns]
 
-            # ---------- Блок осадок ----------
+                    # Показываем таблицы в двух вкладках
+                    tab_x, tab_y = st.tabs(["📊 αx (градусы)", "📊 αy (градусы)"])
+                    with tab_x:
+                        st.dataframe(pivot_x, use_container_width=True, height=300)
+                    with tab_y:
+                        st.dataframe(pivot_y, use_container_width=True, height=300)
+
+                    # Сводка по количеству записей
+                    st.caption(f"Показано записей: {len(df_filtered)}")
+
+                else:
+                    st.info("Выберите хотя бы один этаж для отображения данных.")
+
+            st.divider()
+
+            # --- Блок осадок (оставлен без изменений, но с улучшенным оформлением) ---
             sett_sheets = [s for s in all_sheets if
                            'стилобат' in s.lower() or 'высотн' in s.lower() or 'осадк' in s.lower()]
             if sett_sheets:
-                st.subheader("📐 Данные осадок (для расчёта крена)")
-                with st.expander("Настройки осадок", expanded=False):
-                    selected_sett_sheet = st.selectbox("Выберите лист с осадками", sett_sheets, key="sett_sheet")
-                    corner_marks_str = st.text_input(
-                        "Номера угловых марок (через запятую, в порядке: нижний левый, нижний правый, верхний левый, верхний правый)",
-                        "1,4,11,14"
-                    )
-                    mark_col = st.number_input(
-                        "Номер столбца с марками (0-индекс, обычно 0 или 1)",
-                        min_value=0, step=1, value=0, key="mark_col"
-                    )
-                    manual_osad_col = st.number_input(
-                        "Номер столбца с осадками (0-индекс, если не уверены, оставьте -1 для автоопределения)",
-                        min_value=-1, step=1, value=-1, key="manual_osad_col"
-                    )
-                    try:
-                        corner_marks = [x.strip() for x in corner_marks_str.split(',') if x.strip()]
-                        corner_marks_parsed = []
-                        for m in corner_marks:
-                            try:
-                                corner_marks_parsed.append(int(m))
-                            except ValueError:
-                                corner_marks_parsed.append(m)
-                        corner_marks = corner_marks_parsed
-                        if len(corner_marks) != 4:
-                            st.warning("Введите ровно 4 номера марок.")
-                    except:
-                        corner_marks = []
-                    L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
-                    B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
-
-                    # --- Получаем список циклов осадок для выбора нулевого ---
-                    try:
-                        df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
-                        cycle_header_row_test = None
-                        for idx, row in df_raw_test.iterrows():
-                            row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-                            if 'Цикл' in row_str:
-                                cycle_header_row_test = idx
-                                break
-                        all_cycles_temp = []
-                        if cycle_header_row_test is not None:
-                            for col_idx, cell in df_raw_test.iloc[cycle_header_row_test, :].items():
-                                if pd.notna(cell):
-                                    cell_str = str(cell).strip()
-                                    if 'Цикл' in cell_str:
-                                        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
-                                        if date_match:
-                                            try:
-                                                date_obj = pd.to_datetime(date_match.group(1), dayfirst=True)
-                                                cycle_label = date_obj.strftime('%Y-%m-%d')
-                                                all_cycles_temp.append(cycle_label)
-                                            except:
-                                                pass
-                        def try_parse_date(s):
-                            for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y-%m-%d'):
-                                try:
-                                    return pd.to_datetime(s, format=fmt)
-                                except:
-                                    continue
-                            return None
-                        sorted_cycles_temp = sorted(all_cycles_temp, key=lambda x: try_parse_date(x) or x)
-                        zero_dt = pd.to_datetime(zero_cycle)
-                        best_cycle = sorted_cycles_temp[0] if sorted_cycles_temp else None
-                        if sorted_cycles_temp:
-                            for cyc in sorted_cycles_temp:
-                                cyc_dt = pd.to_datetime(cyc)
-                                if cyc_dt >= zero_dt:
-                                    best_cycle = cyc
-                                    break
-                        if best_cycle is None and sorted_cycles_temp:
-                            best_cycle = sorted_cycles_temp[0]
-                    except:
-                        best_cycle = None
-                        sorted_cycles_temp = []
-
-                    if sorted_cycles_temp:
-                        zero_cycle_sett = st.selectbox(
-                            "Нулевой цикл осадок (от которого считать прирост)",
-                            options=sorted_cycles_temp,
-                            index=sorted_cycles_temp.index(best_cycle) if best_cycle in sorted_cycles_temp else 0,
-                            key="zero_cycle_sett"
+                with st.expander("📐 Данные осадок (для расчёта крена)", expanded=False):
+                    col_sett1, col_sett2 = st.columns([1, 1])
+                    with col_sett1:
+                        selected_sett_sheet = st.selectbox("Выберите лист с осадками", sett_sheets, key="sett_sheet")
+                        corner_marks_str = st.text_input(
+                            "Номера угловых марок (через запятую, в порядке: нижний левый, нижний правый, верхний левый, верхний правый)",
+                            "1,4,11,14"
                         )
-                    else:
-                        zero_cycle_sett = None
+                        mark_col = st.number_input(
+                            "Номер столбца с марками (0-индекс)",
+                            min_value=0, step=1, value=0, key="mark_col"
+                        )
+                        manual_osad_col = st.number_input(
+                            "Номер столбца с осадками (-1 для автоопределения)",
+                            min_value=-1, step=1, value=-1, key="manual_osad_col"
+                        )
+                        try:
+                            corner_marks = [x.strip() for x in corner_marks_str.split(',') if x.strip()]
+                            corner_marks_parsed = []
+                            for m in corner_marks:
+                                try:
+                                    corner_marks_parsed.append(int(m))
+                                except ValueError:
+                                    corner_marks_parsed.append(m)
+                            corner_marks = corner_marks_parsed
+                            if len(corner_marks) != 4:
+                                st.warning("Введите ровно 4 номера марок.")
+                        except:
+                            corner_marks = []
 
-                    if st.button("Рассчитать углы по осадкам"):
+                    with col_sett2:
+                        L_sett = st.number_input("Длина фундамента L, м", value=70.46, step=0.1, key="L_sett")
+                        B_sett = st.number_input("Ширина фундамента B, м", value=18.69, step=0.1, key="B_sett")
+
+                        # Получаем список циклов осадок для выбора нулевого
+                        try:
+                            df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sett_sheet, header=None)
+                            cycle_header_row_test = None
+                            for idx, row in df_raw_test.iterrows():
+                                row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
+                                if 'Цикл' in row_str:
+                                    cycle_header_row_test = idx
+                                    break
+                            all_cycles_temp = []
+                            if cycle_header_row_test is not None:
+                                for col_idx, cell in df_raw_test.iloc[cycle_header_row_test, :].items():
+                                    if pd.notna(cell):
+                                        cell_str = str(cell).strip()
+                                        if 'Цикл' in cell_str:
+                                            date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', cell_str)
+                                            if date_match:
+                                                try:
+                                                    date_obj = pd.to_datetime(date_match.group(1), dayfirst=True)
+                                                    cycle_label = date_obj.strftime('%Y-%m-%d')
+                                                    all_cycles_temp.append(cycle_label)
+                                                except:
+                                                    pass
+                            def try_parse_date(s):
+                                for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%Y-%m-%d'):
+                                    try:
+                                        return pd.to_datetime(s, format=fmt)
+                                    except:
+                                        continue
+                                return None
+                            sorted_cycles_temp = sorted(all_cycles_temp, key=lambda x: try_parse_date(x) or x)
+                            zero_dt = pd.to_datetime(zero_cycle)
+                            best_cycle = sorted_cycles_temp[0] if sorted_cycles_temp else None
+                            if sorted_cycles_temp:
+                                for cyc in sorted_cycles_temp:
+                                    cyc_dt = pd.to_datetime(cyc)
+                                    if cyc_dt >= zero_dt:
+                                        best_cycle = cyc
+                                        break
+                            if best_cycle is None and sorted_cycles_temp:
+                                best_cycle = sorted_cycles_temp[0]
+                        except:
+                            best_cycle = None
+                            sorted_cycles_temp = []
+
+                        if sorted_cycles_temp:
+                            zero_cycle_sett = st.selectbox(
+                                "Нулевой цикл осадок",
+                                options=sorted_cycles_temp,
+                                index=sorted_cycles_temp.index(best_cycle) if best_cycle in sorted_cycles_temp else 0,
+                                key="zero_cycle_sett"
+                            )
+                        else:
+                            zero_cycle_sett = None
+
+                    if st.button("Рассчитать углы по осадкам", type="primary"):
                         if len(corner_marks) == 4 and zero_cycle_sett is not None:
                             result = parse_settlement_data(
                                 file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett,
@@ -1034,22 +1103,35 @@ if uploaded_file is not None:
                         else:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
-                if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
-                    df_angles = st.session_state.res_df_sett_angles.copy()
-                    st.subheader("Таблица углов крена по осадкам")
-                    st.caption("**Примечание:** показаны углы для всех циклов (кроме нулевого, где значения равны 0).")
-                    st.dataframe(
-                        df_angles,
-                        column_config={
-                            "Цикл": "Цикл",
-                            "a_мм_м": st.column_config.NumberColumn("a, мм/м", format="%.3f"),
-                            "b_мм_м": st.column_config.NumberColumn("b, мм/м", format="%.3f"),
-                            "a_град": st.column_config.NumberColumn("a, град", format="%.4f"),
-                            "b_град": st.column_config.NumberColumn("b, град", format="%.4f"),
-                        },
-                        use_container_width=True
-                    )
+                    if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
+                        df_angles = st.session_state.res_df_sett_angles.copy()
+                        st.subheader("Таблица углов крена по осадкам")
+                        st.caption("**Примечание:** показаны углы для всех циклов (кроме нулевого, где значения равны 0).")
+                        st.dataframe(
+                            df_angles,
+                            column_config={
+                                "Цикл": "Цикл",
+                                "a_мм_м": st.column_config.NumberColumn("a, мм/м", format="%.3f"),
+                                "b_мм_м": st.column_config.NumberColumn("b, мм/м", format="%.3f"),
+                                "a_град": st.column_config.NumberColumn("a, град", format="%.4f"),
+                                "b_град": st.column_config.NumberColumn("b, град", format="%.4f"),
+                            },
+                            use_container_width=True
+                        )
 
+            # ---------- Вывод параметров (для контроля) ----------
+            with st.expander("ℹ️ Текущие параметры расчёта", expanded=False):
+                st.write(f"**Нулевой цикл:** {zero_cycle_display}")
+                st.write(f"**αx0:** {alpha0_x:.3f}°, **αy0:** {alpha0_y:.3f}°")
+                st.write(f"**Высота этажа L:** {L:.1f} м")
+                if 'res_df_sett_angles' in st.session_state:
+                    st.write(f"**Осадки:** рассчитаны для {len(st.session_state.res_df_sett_angles)} циклов")
+
+        # ============================================================
+        # КОНЕЦ ВКЛАДКИ "ДАННЫЕ И ПАРАМЕТРЫ"
+        # ============================================================
+
+        # --- Остальные вкладки без изменений ---
         with tab2:
             st.subheader("🏢 3D-модель здания с креном и наклономерами")
             st.markdown("""
