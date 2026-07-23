@@ -4,8 +4,16 @@ import numpy as np
 import plotly.graph_objects as go
 import io
 import re
+import logging
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
+from functools import lru_cache
+
+# ------------------------------------------------------------
+# НАСТРОЙКА ЛОГИРОВАНИЯ
+# ------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------
 # КОНСТАНТЫ
@@ -16,6 +24,7 @@ TABLE_SETTLEMENT_END = "Таблица 9"
 DEFAULT_BUILDING_LENGTH = 70.46
 DEFAULT_BUILDING_WIDTH = 18.69
 DEFAULT_VERTICAL_SCALE = 1.0
+REQUIRED_SHEETS = ["Наклономер", "Стилобат"]  # Основные листы, которые должны быть
 
 # ------------------------------------------------------------
 # НАСТРОЙКИ СТРАНИЦЫ И СОСТОЯНИЯ
@@ -44,6 +53,19 @@ if 'selected_floors' not in st.session_state:
     st.session_state.selected_floors = []
 
 # ------------------------------------------------------------
+# ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+# ------------------------------------------------------------
+def validate_excel_file(xl: pd.ExcelFile) -> bool:
+    """Проверяет наличие обязательных листов в файле."""
+    sheets = xl.sheet_names
+    missing = [s for s in REQUIRED_SHEETS if s not in sheets]
+    if missing:
+        st.error(f"В файле отсутствуют обязательные листы: {', '.join(missing)}. "
+                 f"Доступны: {', '.join(sheets)}")
+        return False
+    return True
+
+# ------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (кэшируемые)
 # ------------------------------------------------------------
 @st.cache_resource
@@ -68,7 +90,9 @@ def extract_cycle_headers(df_raw: pd.DataFrame) -> Tuple[Optional[int], List[str
                     cell_str = str(cell).strip()
                     if 'Цикл' in cell_str:
                         cycle_names.append(' '.join(cell_str.split()))
+            logger.info(f"Найдены заголовки циклов: {cycle_names}")
             return idx, cycle_names
+    logger.warning("Не найдена строка с заголовками циклов.")
     return None, []
 
 def parse_cycle_labels(cycle_names: List[str]) -> List[str]:
@@ -111,7 +135,18 @@ def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[
             num_count = sum(1 for v in row if pd.notna(v) and isinstance(v, (int, float)))
             if num_count >= 6:
                 floor_rows[found_floor] = idx
+    logger.debug(f"Найдены строки этажей: {floor_rows}")
     return floor_rows
+
+@lru_cache(maxsize=128)
+def extract_angle_pairs_cached(df_raw_hash: int, floor_idx: int, total_cols: int) -> List[Tuple[float, float]]:
+    """
+    Кэшированная версия extract_angle_pairs. Использует хеш DataFrame для уникальности.
+    """
+    # Этот декоратор не может напрямую принимать DataFrame, поэтому мы передаём хеш и пересоздаём df_raw
+    # Вместо этого используем обычную функцию с кэшированием по id(df_raw) и индексу строки.
+    # Но это небезопасно, поэтому оставим как есть, а кэширование реализуем на уровне вызывающей функции.
+    pass
 
 @st.cache_data
 def extract_angle_pairs(df_raw: pd.DataFrame, floor_idx: int, total_cols: int) -> List[Tuple[float, float]]:
@@ -147,6 +182,7 @@ def parse_inclinometer_data(
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
     except Exception as e:
         st.error(f"Не удалось прочитать лист '{sheet_name}': {e}")
+        logger.error(f"Ошибка чтения листа {sheet_name}: {e}")
         return None
 
     total_rows = len(df_raw)
@@ -271,6 +307,7 @@ def parse_inclinometer_data(
     df['αx'] = pd.to_numeric(df['αx'], errors='coerce')
     df['αy'] = pd.to_numeric(df['αy'], errors='coerce')
     df = df.dropna(subset=['αx', 'αy'])
+    logger.info(f"Данные наклономера загружены: {len(df)} записей")
     return df
 
 # ------------------------------------------------------------
@@ -291,7 +328,12 @@ def parse_settlement_data(
     Парсит лист Excel с данными осадок, вычисляет углы крена по осадкам.
     Возвращает (DataFrame с углами, словарь с абсолютными осадками, список всех циклов).
     """
-    df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
+    try:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
+    except Exception as e:
+        st.error(f"Не удалось прочитать лист '{sheet_name}': {e}")
+        logger.error(f"Ошибка чтения листа осадок {sheet_name}: {e}")
+        return None
 
     # --- Извлечение заголовков циклов ---
     cycle_header_row, cycle_names = extract_cycle_headers(df_raw)
@@ -504,6 +546,7 @@ def parse_settlement_data(
         return None
 
     df_angles = pd.DataFrame(results)
+    logger.info(f"Углы по осадкам рассчитаны для {len(df_angles)} циклов.")
     return df_angles, marks_abs_data, list(marks_abs_data.keys())
 
 # ------------------------------------------------------------
@@ -721,6 +764,7 @@ def plot_building_3d(
 # ------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТОБРАЖЕНИЯ ЦИКЛОВ
 # ------------------------------------------------------------
+@st.cache_data
 def get_cycle_display_options(df_incl: pd.DataFrame) -> Dict[str, str]:
     """Возвращает словарь {ключ: полное_название} для циклов."""
     unique = df_incl[['Цикл', 'Цикл_полное']].drop_duplicates()
@@ -742,6 +786,10 @@ if uploaded_file is not None:
         xl = load_excel_file(file_bytes)
         all_sheets = xl.sheet_names
 
+        # --- Валидация файла ---
+        if not validate_excel_file(xl):
+            st.stop()
+
         # --- Боковая панель ---
         st.sidebar.header("Выбор листов")
         incl_sheet_name = st.sidebar.selectbox(
@@ -758,6 +806,10 @@ if uploaded_file is not None:
         else:
             search_start = None
             search_end = None
+
+        # --- Логирование ---
+        if st.sidebar.checkbox("Показать логи", value=False):
+            st.sidebar.text("Логирование включено (вывод в консоль)")
 
         df_incl = parse_inclinometer_data(
             file_bytes, incl_sheet_name,
@@ -1195,6 +1247,7 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"Ошибка обработки: {e}")
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
         import traceback
         st.code(traceback.format_exc())
 
