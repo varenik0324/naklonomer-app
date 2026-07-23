@@ -7,7 +7,6 @@ import re
 import logging
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
-from functools import lru_cache
 
 # ------------------------------------------------------------
 # НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -70,7 +69,7 @@ class AppState:
 # ------------------------------------------------------------
 class ExcelParser:
     @staticmethod
-    @st.cache_data
+    @st.cache_resource  # <- ИСПРАВЛЕНО: cache_resource вместо cache_data
     def load_excel(file_bytes: bytes) -> pd.ExcelFile:
         return pd.ExcelFile(io.BytesIO(file_bytes))
 
@@ -79,7 +78,6 @@ class ExcelParser:
         """Находит строку с заголовками циклов и извлекает названия."""
         for idx, row in df_raw.iterrows():
             row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
-            # Ищем "Цикл" и дату в формате ДД.ММ.ГГГГ
             if 'Цикл' in row_str and re.search(r'\d{2}\.\d{2}\.\d{4}', row_str):
                 cycle_names = []
                 for col in range(1, len(row)):
@@ -113,7 +111,6 @@ class ExcelParser:
         """
         floor_rows = {}
         for idx, row in df_raw.iterrows():
-            # Проверяем первый столбец
             first_val = row.iloc[0] if len(row) > 0 else None
             if pd.isna(first_val):
                 continue
@@ -121,7 +118,6 @@ class ExcelParser:
                 floor = int(float(first_val))
             except (ValueError, TypeError):
                 continue
-            # Считаем числовые значения в строке (начиная со второго столбца)
             numbers = [v for v in row.iloc[1:] if pd.notna(v) and isinstance(v, (int, float))]
             if len(numbers) >= 2 * cycle_count:
                 floor_rows[floor] = idx
@@ -146,7 +142,6 @@ class ExcelParser:
             st.error(f"Не удалось прочитать лист '{sheet_name}': {e}")
             return None
 
-        # Находим строку с заголовками циклов
         header_row, cycle_names = cls._extract_cycle_headers(df_raw)
         if header_row is None:
             st.error("Не найдена строка с заголовками циклов.")
@@ -156,18 +151,15 @@ class ExcelParser:
             st.error("Не удалось распознать даты циклов.")
             return None
 
-        # Ищем строки с этажами
         floor_rows = cls._find_floor_rows(df_raw, len(cycle_labels))
         if len(floor_rows) < 2:
             st.warning("Найдено менее двух этажей. Проверьте структуру файла.")
             return None
 
-        # Собираем данные
         data = []
         for floor, row_idx in floor_rows.items():
             row = df_raw.iloc[row_idx]
             pairs = cls._extract_angle_pairs(row)
-            # Обрезаем до количества циклов
             pairs = pairs[:len(cycle_labels)]
             for i, (ax, ay) in enumerate(pairs):
                 data.append({
@@ -207,7 +199,6 @@ class ExcelParser:
             st.error(f"Не удалось прочитать лист '{sheet_name}': {e}")
             return None
 
-        # Находим заголовки циклов
         header_row, cycle_names = cls._extract_cycle_headers(df_raw)
         if header_row is None:
             st.error("Не найдена строка с заголовками циклов в листе осадок.")
@@ -217,22 +208,17 @@ class ExcelParser:
             st.error("Не удалось распознать даты циклов в осадках.")
             return None
 
-        # Ищем столбцы с осадками (после заголовка "Осадка" или сразу после цикла)
-        # Упрощённо: предполагаем, что осадки находятся в столбце, следующем за заголовком цикла
-        # Но для надёжности ищем столбцы, содержащие слово "осадк" (регистронезависимо)
+        # Ищем столбцы с осадками
         osad_cols = {}
         for col_idx, cell in df_raw.iloc[header_row, :].items():
             if pd.notna(cell) and 'осадк' in str(cell).lower():
                 osad_cols[col_idx] = str(cell).strip()
 
-        # Для каждого цикла определяем столбец с осадками
         cycle_to_col = {}
         for idx, label in enumerate(cycle_labels):
-            # Ищем столбец, где в заголовке есть "Цикл" и дата
             col_found = None
             for col_idx, cell in df_raw.iloc[header_row, :].items():
                 if pd.notna(cell) and 'Цикл' in str(cell) and label in str(cell):
-                    # Ищем осадки через 1-2 столбца
                     for offset in [1, 2, 3]:
                         check_col = col_idx + offset
                         if check_col in osad_cols or (check_col < len(df_raw.columns) and
@@ -240,7 +226,6 @@ class ExcelParser:
                             col_found = check_col
                             break
                     if col_found is None:
-                        # если не нашли, берём col_idx+1
                         col_found = col_idx + 1
                     break
             if col_found is not None and col_found < len(df_raw.columns):
@@ -252,7 +237,6 @@ class ExcelParser:
             st.error("Не найдены столбцы с осадками.")
             return None
 
-        # Ищем строки с марками (в столбце mark_col числа)
         mark_rows = []
         for idx in range(header_row + 1, len(df_raw)):
             val = df_raw.iloc[idx, mark_col]
@@ -263,7 +247,6 @@ class ExcelParser:
             st.error(f"Не найдены строки с марками в столбце {mark_col}.")
             return None
 
-        # Собираем данные по осадкам для каждого цикла и марки
         marks_data = {}
         for cycle, col_idx in cycle_to_col.items():
             marks_data[cycle] = {}
@@ -276,22 +259,18 @@ class ExcelParser:
                 else:
                     marks_data[cycle][mark_str] = np.nan
 
-        # Выбираем нулевой цикл – первый по дате
         sorted_cycles = sorted(cycle_labels)
         zero_cycle = sorted_cycles[0] if sorted_cycles else None
         if zero_cycle is None:
             st.error("Нет циклов для определения нулевого.")
             return None
 
-        # Проверяем наличие выбранных марок
         corner_marks_str = [str(m) for m in corner_marks]
-        # Проверяем, что все марки есть в нулевом цикле
         for mark in corner_marks_str:
             if mark not in marks_data[zero_cycle] or np.isnan(marks_data[zero_cycle][mark]):
                 st.warning(f"Марка {mark} отсутствует в нулевом цикле {zero_cycle}. Попробуйте другие марки.")
                 return None
 
-        # Вычисляем приросты для каждого цикла
         results = []
         for cycle in sorted_cycles:
             if cycle == zero_cycle:
@@ -304,7 +283,6 @@ class ExcelParser:
                     s[mark] = np.nan
             if any(np.isnan(list(s.values()))):
                 continue
-            # Расчёт крена по осадкам
             s1, s2, s3, s4 = s[corner_marks_str[0]], s[corner_marks_str[1]], s[corner_marks_str[2]], s[corner_marks_str[3]]
             a = ((s2 - s1) + (s4 - s3)) / (2 * L_fund) if L_fund != 0 else 0
             b = ((s3 - s1) + (s4 - s2)) / (2 * B_fund) if B_fund != 0 else 0
@@ -329,15 +307,11 @@ class DataProcessor:
     @staticmethod
     def apply_parameters(df_incl: pd.DataFrame, zero_cycle: str,
                          alpha0_x: float, alpha0_y: float, L: float) -> pd.DataFrame:
-        """
-        Вычисляет абсолютные углы и смещения.
-        """
         df = df_incl.copy()
         zero_data = df[df['Цикл'] == zero_cycle][['Этаж', 'αx', 'αy']].rename(
             columns={'αx': 'αx0_inc', 'αy': 'αy0_inc'}
         )
         df = df.merge(zero_data, on='Этаж', how='left')
-        # Если для какого-то этажа нет данных в нулевом цикле – предупреждение и замена на 0
         if df['αx0_inc'].isna().any() or df['αy0_inc'].isna().any():
             st.warning("Некоторые этажи отсутствуют в нулевом цикле. Для них начальные углы приняты за 0.")
             df['αx0_inc'] = df['αx0_inc'].fillna(0)
@@ -351,9 +325,6 @@ class DataProcessor:
 
     @staticmethod
     def filter_data(df: pd.DataFrame, filter_type: str, window: int, L: float) -> pd.DataFrame:
-        """
-        Применяет фильтр к абсолютным углам (αx_abs, αy_abs) и пересчитывает смещения.
-        """
         if filter_type == "Нет" or window < 2:
             return df.copy()
 
@@ -361,7 +332,6 @@ class DataProcessor:
         for floor in df['Этаж'].unique():
             mask = df['Этаж'] == floor
             floor_data = df[mask].sort_values('Цикл')
-            # Применяем rolling
             if filter_type == "Скользящее среднее":
                 filtered_x = floor_data['αx_abs'].rolling(window=window, center=True, min_periods=1).mean()
                 filtered_y = floor_data['αy_abs'].rolling(window=window, center=True, min_periods=1).mean()
@@ -373,7 +343,6 @@ class DataProcessor:
 
             df_filtered.loc[floor_data.index, 'αx_abs'] = filtered_x.values
             df_filtered.loc[floor_data.index, 'αy_abs'] = filtered_y.values
-            # Пересчёт смещений
             df_filtered.loc[floor_data.index, 'Смещение X'] = L * np.sin(np.radians(filtered_x.values))
             df_filtered.loc[floor_data.index, 'Смещение Y'] = L * np.sin(np.radians(filtered_y.values))
 
@@ -383,9 +352,6 @@ class DataProcessor:
     @st.cache_data
     def calculate_displacement(df_incl_filtered: pd.DataFrame, cycle: str, floors: List[int],
                                L: float, vertical_scale: float = 1.0):
-        """
-        Возвращает точки деформированной оси и параметры крена.
-        """
         df_cycle = df_incl_filtered[df_incl_filtered['Цикл'] == cycle]
         if floors:
             df_cycle = df_cycle[df_cycle['Этаж'].isin(floors)]
@@ -422,12 +388,8 @@ class Visualizer:
     def plot_3d(points, top_x, top_y, top_z, max_z,
                 df_floors, cycle, building_length, building_width,
                 vertical_scale, df_sett_angles=None):
-        """
-        Строит 3D-модель.
-        """
         fig = go.Figure()
 
-        # Исходная вертикаль
         fig.add_trace(go.Scatter3d(
             x=[0, 0], y=[0, 0], z=[0, max_z],
             mode='lines',
@@ -435,7 +397,6 @@ class Visualizer:
             name='Исходная вертикаль'
         ))
 
-        # Деформированная ось
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         zs = [p[2] for p in points]
@@ -447,7 +408,6 @@ class Visualizer:
             name='Деформированная ось'
         ))
 
-        # Векторы смещений и подписи этажей
         for i, (x, y, z) in enumerate(points[1:], start=1):
             floor = df_floors.iloc[i-1]['Этаж']
             fig.add_trace(go.Scatter3d(
@@ -467,7 +427,6 @@ class Visualizer:
                 showlegend=False
             ))
 
-        # Наклономеры
         for i, (x, y, z) in enumerate(points[1:], start=1):
             floor = df_floors.iloc[i-1]['Этаж']
             alpha_x = df_floors.iloc[i-1]['αx_abs']
@@ -481,7 +440,6 @@ class Visualizer:
                 name=f'Наклономер {floor}'
             ))
 
-        # Общий крен
         fig.add_trace(go.Scatter3d(
             x=[0, top_x], y=[0, top_y], z=[0, top_z],
             mode='lines+markers',
@@ -499,7 +457,6 @@ class Visualizer:
             showlegend=False
         ))
 
-        # Крен по осадкам
         if df_sett_angles is not None and not df_sett_angles.empty:
             sett_row = df_sett_angles[df_sett_angles['Цикл'] == cycle]
             if not sett_row.empty:
@@ -516,7 +473,6 @@ class Visualizer:
                     name=f'Крен по осадкам (a={a:.2f}, b={b:.2f})'
                 ))
 
-        # Каркас здания
         half_len = building_length / 2
         half_wid = building_width / 2
         corners = [
@@ -570,11 +526,9 @@ def main():
     st.title("📐 3D-модель здания по данным накладного инклинометра и осадок")
     st.markdown("Загрузите Excel-файл и настройте параметры – модель построится автоматически.")
 
-    # Инициализация состояния
     state = AppState()
     state.update_from_session()
 
-    # Боковая панель
     st.sidebar.header("Загрузка файла")
     uploaded_file = st.file_uploader("Выберите Excel-файл", type=["xlsx", "xls"])
 
@@ -591,25 +545,20 @@ def main():
             st.error("Лист 'Наклономер' не найден. Проверьте файл.")
             st.stop()
 
-        # Парсинг наклономера (с кэшированием)
         df_incl = ExcelParser.parse_inclinometer(file_bytes, "Наклономер")
         if df_incl is None:
             st.stop()
 
-        # Получаем список циклов
         cycles = sorted(df_incl['Цикл'].unique())
         if not cycles:
             st.error("Нет данных по циклам.")
             st.stop()
 
-        # Определяем отображение циклов
         cycle_display = {c: df_incl[df_incl['Цикл'] == c]['Цикл_полное'].iloc[0] for c in cycles}
         state.cycles = cycles
         state.cycle_display_map = cycle_display
 
-        # Боковая панель: параметры
         st.sidebar.header("Параметры модели")
-        # Нулевой цикл
         zero_cycle_idx = cycles.index(state.zero_cycle) if state.zero_cycle in cycles else 0
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
@@ -618,28 +567,22 @@ def main():
             format_func=lambda x: cycle_display[x],
             key="zero_cycle_select"
         )
-        # L
         L = st.sidebar.number_input("Высота этажа L, м", value=state.L, step=0.1, format="%.1f", key="L_input")
-        # α0
         alpha0_x = st.sidebar.number_input("αx0, °", value=state.alpha0_x, step=0.001, format="%.3f", key="alpha0_x")
         alpha0_y = st.sidebar.number_input("αy0, °", value=state.alpha0_y, step=0.001, format="%.3f", key="alpha0_y")
 
-        # Фильтр
         st.sidebar.subheader("Фильтрация данных")
         filter_type = st.sidebar.selectbox("Тип фильтра", FILTER_TYPES, index=FILTER_TYPES.index(state.filter_type), key="filter_type")
         filter_window = st.sidebar.number_input("Размер окна (циклы)", min_value=2, max_value=15,
                                                 value=state.filter_window, step=1, key="filter_window")
 
-        # Этажи
         all_floors = sorted(df_incl['Этаж'].unique())
         selected_floors = st.sidebar.multiselect("Выберите этажи", all_floors, default=all_floors, key="selected_floors")
 
-        # Размеры здания
         building_length = st.sidebar.number_input("Длина здания, м", value=state.building_length, step=0.1, key="building_length")
         building_width = st.sidebar.number_input("Ширина здания, м", value=state.building_width, step=0.1, key="building_width")
         vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, state.vertical_scale, 0.1, key="vertical_scale")
 
-        # Обновляем состояние
         state.zero_cycle = zero_cycle
         state.L = L
         state.alpha0_x = alpha0_x
@@ -652,8 +595,6 @@ def main():
         state.vertical_scale = vertical_scale
         state.save_to_session()
 
-        # ---------- Обработка данных ----------
-        # Применяем параметры к сырым данным (с кэшированием)
         @st.cache_data
         def process_raw(df, zero_cycle, a0x, a0y, L):
             return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L)
@@ -661,7 +602,6 @@ def main():
         df_raw = process_raw(df_incl, zero_cycle, alpha0_x, alpha0_y, L)
         state.df_incl_raw = df_raw
 
-        # Фильтрация (с кэшированием)
         @st.cache_data
         def process_filtered(df_raw, filter_type, filter_window, L):
             return DataProcessor.filter_data(df_raw, filter_type, filter_window, L)
@@ -669,7 +609,6 @@ def main():
         df_filtered = process_filtered(df_raw, filter_type, filter_window, L)
         state.df_incl_filtered = df_filtered
 
-        # Данные осадок (если лист есть)
         if "Стилобат" in all_sheets:
             st.sidebar.subheader("Осадки")
             if st.sidebar.checkbox("Рассчитать крен по осадкам", value=False):
@@ -689,23 +628,19 @@ def main():
         else:
             state.df_sett_angles = None
 
-        # ---------- Вкладки ----------
         tab1, tab2, tab3 = st.tabs(["📊 Данные и параметры", "🏢 3D-модель", "📘 О приборе"])
 
         with tab1:
             st.subheader("Данные наклономера")
-            # Отображение таблицы с возможностью выбора этажей
             show_floors = st.multiselect("Показать этажи", all_floors, default=selected_floors, key="show_floors_tab1")
             if show_floors:
                 df_show = df_filtered[df_filtered['Этаж'].isin(show_floors)].copy()
-                # Преобразуем в удобный формат: сводная таблица
                 df_pivot = df_show.pivot_table(index=['Этаж', 'Цикл'],
                                                values=['αx_abs', 'αy_abs', 'Смещение X', 'Смещение Y'],
                                                aggfunc='first').reset_index()
                 df_pivot['Цикл'] = df_pivot['Цикл'].map(cycle_display)
                 st.dataframe(df_pivot, use_container_width=True, height=400)
 
-                # Сравнение с сырыми данными (если фильтр включён)
                 if filter_type != "Нет":
                     with st.expander("📊 Сравнение с сырыми данными (без фильтра)"):
                         df_raw_show = df_raw[df_raw['Этаж'].isin(show_floors)].copy()
@@ -715,7 +650,6 @@ def main():
                         df_raw_pivot['Цикл'] = df_raw_pivot['Цикл'].map(cycle_display)
                         st.dataframe(df_raw_pivot, use_container_width=True, height=300)
 
-            # Отображение информации о фильтре
             st.caption(f"Фильтр: {filter_type}, окно = {filter_window}")
 
             if state.df_sett_angles is not None:
@@ -727,14 +661,12 @@ def main():
             if len(cycles) == 0:
                 st.warning("Нет циклов для отображения.")
             else:
-                # Выбор цикла
                 default_cycle = state.selected_cycle_key if state.selected_cycle_key in cycles else cycles[-1]
                 selected_cycle = st.selectbox("Выберите цикл", cycles, index=cycles.index(default_cycle),
                                               format_func=lambda x: cycle_display[x], key="cycle_3d")
                 state.selected_cycle_key = selected_cycle
                 state.save_to_session()
 
-                # Расчёт смещений
                 points, top_x, top_y, top_z, max_z = DataProcessor.calculate_displacement(
                     df_filtered, selected_cycle, selected_floors, L, vertical_scale
                 )
