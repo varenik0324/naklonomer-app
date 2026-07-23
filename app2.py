@@ -532,13 +532,13 @@ def main():
             st.stop()
 
         cycle_display = {c: df_incl[df_incl['Цикл'] == c]['Цикл_полное'].iloc[0] for c in cycles}
-        st.session_state.cycles = cycles
-        st.session_state.cycle_display_map = cycle_display
-        st.session_state.file_loaded = True
+        st.session_state["cycles"] = cycles
+        st.session_state["cycle_display_map"] = cycle_display
+        st.session_state["file_loaded"] = True
 
         # Параметры модели
         st.sidebar.header("Параметры модели")
-        zero_cycle_idx = cycles.index(st.session_state.zero_cycle) if st.session_state.zero_cycle in cycles else 0
+        zero_cycle_idx = cycles.index(st.session_state["zero_cycle"]) if st.session_state["zero_cycle"] in cycles else 0
         zero_cycle = st.sidebar.selectbox(
             "Нулевой цикл",
             options=cycles,
@@ -546,33 +546,33 @@ def main():
             format_func=lambda x: cycle_display[x],
             key="zero_cycle_select"
         )
-        L = st.sidebar.number_input("Высота этажа L, м", value=st.session_state.L, step=0.1, format="%.1f", key="L_input")
-        alpha0_x = st.sidebar.number_input("αx0, °", value=st.session_state.alpha0_x, step=0.001, format="%.3f", key="alpha0_x")
-        alpha0_y = st.sidebar.number_input("αy0, °", value=st.session_state.alpha0_y, step=0.001, format="%.3f", key="alpha0_y")
+        L = st.sidebar.number_input("Высота этажа L, м", value=st.session_state["L"], step=0.1, format="%.1f", key="L_input")
+        alpha0_x = st.sidebar.number_input("αx0, °", value=st.session_state["alpha0_x"], step=0.001, format="%.3f", key="alpha0_x")
+        alpha0_y = st.sidebar.number_input("αy0, °", value=st.session_state["alpha0_y"], step=0.001, format="%.3f", key="alpha0_y")
 
         st.sidebar.subheader("Фильтрация данных")
-        filter_type = st.sidebar.selectbox("Тип фильтра", FILTER_TYPES, index=FILTER_TYPES.index(st.session_state.filter_type), key="filter_type")
+        filter_type = st.sidebar.selectbox("Тип фильтра", FILTER_TYPES, index=FILTER_TYPES.index(st.session_state["filter_type"]), key="filter_type")
         filter_window = st.sidebar.number_input("Размер окна (циклы)", min_value=2, max_value=15,
-                                                value=st.session_state.filter_window, step=1, key="filter_window")
+                                                value=st.session_state["filter_window"], step=1, key="filter_window")
 
         all_floors = sorted(df_incl['Этаж'].unique())
-        selected_floors = st.sidebar.multiselect("Выберите этажи", all_floors, default=st.session_state.selected_floors or all_floors, key="selected_floors")
+        selected_floors = st.sidebar.multiselect("Выберите этажи", all_floors, default=st.session_state["selected_floors"] or all_floors, key="selected_floors")
 
-        building_length = st.sidebar.number_input("Длина здания, м", value=st.session_state.building_length, step=0.1, key="building_length")
-        building_width = st.sidebar.number_input("Ширина здания, м", value=st.session_state.building_width, step=0.1, key="building_width")
-        vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, st.session_state.vertical_scale, 0.1, key="vertical_scale")
+        building_length = st.sidebar.number_input("Длина здания, м", value=st.session_state["building_length"], step=0.1, key="building_length")
+        building_width = st.sidebar.number_input("Ширина здания, м", value=st.session_state["building_width"], step=0.1, key="building_width")
+        vertical_scale = st.sidebar.slider("Вертикальный масштаб", 0.5, 2.0, st.session_state["vertical_scale"], 0.1, key="vertical_scale")
 
-        # Обновляем состояние (только простые параметры)
-        st.session_state.zero_cycle = zero_cycle
-        st.session_state.L = L
-        st.session_state.alpha0_x = alpha0_x
-        st.session_state.alpha0_y = alpha0_y
-        st.session_state.filter_type = filter_type
-        st.session_state.filter_window = filter_window
-        st.session_state.selected_floors = selected_floors
-        st.session_state.building_length = building_length
-        st.session_state.building_width = building_width
-        st.session_state.vertical_scale = vertical_scale
+        # Обновляем состояние (словарный синтаксис)
+        st.session_state["zero_cycle"] = zero_cycle
+        st.session_state["L"] = L
+        st.session_state["alpha0_x"] = alpha0_x
+        st.session_state["alpha0_y"] = alpha0_y
+        st.session_state["filter_type"] = filter_type
+        st.session_state["filter_window"] = filter_window
+        st.session_state["selected_floors"] = selected_floors
+        st.session_state["building_length"] = building_length
+        st.session_state["building_width"] = building_width
+        st.session_state["vertical_scale"] = vertical_scale
 
         # Обработка данных (с кэшированием)
         @st.cache_data
@@ -580,14 +580,14 @@ def main():
             return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L)
 
         df_raw = process_raw(df_incl, zero_cycle, alpha0_x, alpha0_y, L)
-        st.session_state.df_incl_raw = df_raw
+        st.session_state["df_incl_raw"] = df_raw
 
         @st.cache_data
         def process_filtered(df_raw, filter_type, filter_window, L):
             return DataProcessor.filter_data(df_raw, filter_type, filter_window, L)
 
         df_filtered = process_filtered(df_raw, filter_type, filter_window, L)
-        st.session_state.df_incl_filtered = df_filtered
+        st.session_state["df_incl_filtered"] = df_filtered
 
         # Осадки
         if "Стилобат" in all_sheets:
@@ -603,10 +603,10 @@ def main():
                     else:
                         df_sett = ExcelParser.parse_settlement(file_bytes, "Стилобат", marks, L_fund, B_fund)
                         if df_sett is not None:
-                            st.session_state.df_sett_angles = df_sett
+                            st.session_state["df_sett_angles"] = df_sett
                             st.success("Углы по осадкам рассчитаны.")
         else:
-            st.session_state.df_sett_angles = None
+            st.session_state["df_sett_angles"] = None
 
         # Вкладки
         tab1, tab2, tab3 = st.tabs(["📊 Данные и параметры", "🏢 3D-модель", "📘 О приборе"])
@@ -633,19 +633,19 @@ def main():
 
             st.caption(f"Фильтр: {filter_type}, окно = {filter_window}")
 
-            if st.session_state.df_sett_angles is not None:
+            if st.session_state["df_sett_angles"] is not None:
                 st.subheader("Крен по осадкам")
-                st.dataframe(st.session_state.df_sett_angles, use_container_width=True)
+                st.dataframe(st.session_state["df_sett_angles"], use_container_width=True)
 
         with tab2:
             st.subheader("3D-модель здания")
             if len(cycles) == 0:
                 st.warning("Нет циклов для отображения.")
             else:
-                default_cycle = st.session_state.selected_cycle_key if st.session_state.selected_cycle_key in cycles else cycles[-1]
+                default_cycle = st.session_state["selected_cycle_key"] if st.session_state["selected_cycle_key"] in cycles else cycles[-1]
                 selected_cycle = st.selectbox("Выберите цикл", cycles, index=cycles.index(default_cycle),
                                               format_func=lambda x: cycle_display[x], key="cycle_3d")
-                st.session_state.selected_cycle_key = selected_cycle
+                st.session_state["selected_cycle_key"] = selected_cycle
 
                 points, top_x, top_y, top_z, max_z = DataProcessor.calculate_displacement(
                     df_filtered, selected_cycle, selected_floors, L, vertical_scale
@@ -658,7 +658,7 @@ def main():
                     fig = Visualizer.plot_3d(
                         points, top_x, top_y, top_z, max_z,
                         df_floors, selected_cycle, building_length, building_width,
-                        vertical_scale, st.session_state.df_sett_angles
+                        vertical_scale, st.session_state["df_sett_angles"]
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
