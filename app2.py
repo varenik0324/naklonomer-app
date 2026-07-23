@@ -138,16 +138,6 @@ def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[
     logger.debug(f"Найдены строки этажей: {floor_rows}")
     return floor_rows
 
-@lru_cache(maxsize=128)
-def extract_angle_pairs_cached(df_raw_hash: int, floor_idx: int, total_cols: int) -> List[Tuple[float, float]]:
-    """
-    Кэшированная версия extract_angle_pairs. Использует хеш DataFrame для уникальности.
-    """
-    # Этот декоратор не может напрямую принимать DataFrame, поэтому мы передаём хеш и пересоздаём df_raw
-    # Вместо этого используем обычную функцию с кэшированием по id(df_raw) и индексу строки.
-    # Но это небезопасно, поэтому оставим как есть, а кэширование реализуем на уровне вызывающей функции.
-    pass
-
 @st.cache_data
 def extract_angle_pairs(df_raw: pd.DataFrame, floor_idx: int, total_cols: int) -> List[Tuple[float, float]]:
     """Извлекает пары (αx, αy) из строки, начиная с колонки 1."""
@@ -902,6 +892,13 @@ if uploaded_file is not None:
             if len(cycle_keys) == 0:
                 st.error("Нет циклов в данных наклономера.")
                 st.stop()
+
+            # ===== ВОТ ЗДЕСЬ ДОБАВЛЯЕМ ОТОБРАЖЕНИЕ ДАННЫХ НАКЛОНОМЕРА =====
+            with st.expander("📋 Данные наклономера (сырые значения)", expanded=False):
+                df_display = df_incl.copy()
+                df_display['Цикл'] = df_display['Цикл'].map(cycle_display_map)
+                st.dataframe(df_display, use_container_width=True)
+                st.caption(f"Всего записей: {len(df_display)}")
 
             st.subheader("⚙️ Параметры расчёта")
             col1, col2, col3, col4 = st.columns(4)
