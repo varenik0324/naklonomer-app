@@ -25,6 +25,7 @@ DEFAULT_BUILDING_LENGTH = 70.46
 DEFAULT_BUILDING_WIDTH = 18.69
 DEFAULT_VERTICAL_SCALE = 1.0
 REQUIRED_SHEETS = ["Наклономер", "Стилобат"]
+MAX_ANGLE_DEG = 30  # для валидации
 
 # ------------------------------------------------------------
 # НАСТРОЙКИ СТРАНИЦЫ И СОСТОЯНИЯ
@@ -61,6 +62,8 @@ if 'alpha0_y' not in st.session_state:
     st.session_state.alpha0_y = 0.0
 if 'selected_cycle_key' not in st.session_state:
     st.session_state.selected_cycle_key = None
+if 'res_df_sett_angles' not in st.session_state:
+    st.session_state.res_df_sett_angles = None
 
 # ------------------------------------------------------------
 # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
@@ -75,9 +78,23 @@ def validate_excel_file(xl: pd.ExcelFile) -> bool:
         return False
     return True
 
+def validate_angles(df: pd.DataFrame) -> bool:
+    """Проверяет, что углы наклона находятся в допустимом диапазоне."""
+    if df.empty:
+        return True
+    max_abs_x = df['αx'].abs().max()
+    max_abs_y = df['αy'].abs().max()
+    if max_abs_x > MAX_ANGLE_DEG or max_abs_y > MAX_ANGLE_DEG:
+        st.warning(f"Обнаружены углы, превышающие {MAX_ANGLE_DEG}°: "
+                   f"αx max={max_abs_x:.2f}°, αy max={max_abs_y:.2f}°. "
+                   "Проверьте корректность данных.")
+        return False
+    return True
+
 # ------------------------------------------------------------
-# ФУНКЦИЯ ПРИМЕНЕНИЯ ПАРАМЕТРОВ
+# ФУНКЦИЯ ПРИМЕНЕНИЯ ПАРАМЕТРОВ (С КЭШИРОВАНИЕМ)
 # ------------------------------------------------------------
+@st.cache_data
 def apply_parameters(df_incl: pd.DataFrame, zero_cycle: str, alpha0_x: float, alpha0_y: float, L: float) -> pd.DataFrame:
     """
     Добавляет в DataFrame колонки:
@@ -96,7 +113,7 @@ def apply_parameters(df_incl: pd.DataFrame, zero_cycle: str, alpha0_x: float, al
     return df
 
 # ------------------------------------------------------------
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (кэшируемые)
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ------------------------------------------------------------
 @st.cache_resource
 def load_excel_file(file_bytes: bytes) -> pd.ExcelFile:
@@ -104,6 +121,7 @@ def load_excel_file(file_bytes: bytes) -> pd.ExcelFile:
 
 @st.cache_data
 def extract_cycle_headers(df_raw: pd.DataFrame) -> Tuple[Optional[int], List[str]]:
+    """Находит строку с заголовками циклов и извлекает полные названия."""
     total_cols = len(df_raw.columns)
     for idx, row in df_raw.iterrows():
         row_str = ' '.join(str(cell) for cell in row if pd.notna(cell))
@@ -121,6 +139,7 @@ def extract_cycle_headers(df_raw: pd.DataFrame) -> Tuple[Optional[int], List[str
     return None, []
 
 def parse_cycle_labels(cycle_names: List[str]) -> List[str]:
+    """Преобразует названия циклов в ключи-даты (YYYY-MM-DD)."""
     labels = []
     for name in cycle_names:
         match = re.search(r'(\d{2}\.\d{2}\.\d{4})', name)
@@ -138,6 +157,7 @@ def parse_cycle_labels(cycle_names: List[str]) -> List[str]:
 
 @st.cache_data
 def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[int, int]:
+    """Ищет строки с номерами этажей в первых двух столбцах."""
     floor_rows = {}
     for idx in range(start_row, end_row):
         row = df_raw.iloc[idx]
@@ -160,6 +180,7 @@ def find_floor_rows(df_raw: pd.DataFrame, start_row: int, end_row: int) -> Dict[
 
 @st.cache_data
 def extract_angle_pairs(df_raw: pd.DataFrame, floor_idx: int, total_cols: int) -> List[Tuple[float, float]]:
+    """Извлекает пары (αx, αy) из строки, начиная с колонки 1."""
     values = []
     for col in range(1, total_cols):
         cell = df_raw.iloc[floor_idx, col]
@@ -183,6 +204,10 @@ def parse_inclinometer_data(
     search_start: Optional[int] = None,
     search_end: Optional[int] = None
 ) -> Optional[pd.DataFrame]:
+    """
+    Парсит лист Excel с данными наклономера.
+    Возвращает DataFrame с колонками: Цикл, Цикл_полное, Этаж, αx, αy.
+    """
     try:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
     except Exception as e:
@@ -323,18 +348,22 @@ def parse_settlement_data(
     mark_col: int = 0,
     zero_cycle_sett: Optional[str] = None,
     manual_osad_col: Optional[int] = None
-):
+) -> Tuple[Optional[pd.DataFrame], Optional[Dict], Optional[List]]:
+    """
+    Парсит лист Excel с данными осадок, вычисляет углы крена по осадкам.
+    Возвращает (DataFrame с углами, словарь с абсолютными осадками, список всех циклов).
+    """
     try:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
     except Exception as e:
         st.error(f"Не удалось прочитать лист '{sheet_name}': {e}")
         logger.error(f"Ошибка чтения листа осадок {sheet_name}: {e}")
-        return None
+        return None, None, None
 
     cycle_header_row, cycle_names = extract_cycle_headers(df_raw)
     if cycle_header_row is None:
         st.error("Не найдена строка с заголовками циклов в листе осадок.")
-        return None
+        return None, None, None
 
     cycle_cols = {}
     all_cycles = []
@@ -358,7 +387,7 @@ def parse_settlement_data(
                         cycle_cols[cycle_label] = manual_osad_col
                     else:
                         st.error(f"Столбец {manual_osad_col} выходит за пределы листа.")
-                        return None
+                        return None, None, None
     else:
         osad_cols = {}
         for col_idx, cell in df_raw.iloc[cycle_header_row, :].items():
@@ -398,7 +427,7 @@ def parse_settlement_data(
 
     if not cycle_cols:
         st.error("Не найдены колонки с осадками для циклов.")
-        return None
+        return None, None, None
 
     unique_cycles = []
     for c in all_cycles:
@@ -425,7 +454,7 @@ def parse_settlement_data(
 
     if zero_cycle_sett is None:
         st.error("Не удалось определить нулевой цикл.")
-        return None
+        return None, None, None
 
     mark_rows = []
     for idx in range(cycle_header_row + 1, len(df_raw)):
@@ -442,7 +471,7 @@ def parse_settlement_data(
 
     if not mark_rows:
         st.warning(f"Не найдены строки с марками в столбце {mark_col}.")
-        return None
+        return None, None, None
 
     marks_abs_data = {}
     for cycle_label, col_idx in cycle_cols.items():
@@ -480,7 +509,7 @@ def parse_settlement_data(
 
     if all(np.isnan(list(zero_marks.values()))):
         st.error("Не удалось найти данные для выбранных угловых марок ни в одном цикле.")
-        return None
+        return None, None, None
 
     data = []
     for cycle_label, cols in marks_abs_data.items():
@@ -497,7 +526,7 @@ def parse_settlement_data(
 
     if not data:
         st.error("Не удалось извлечь приросты осадок для выбранных марок.")
-        return None
+        return None, None, None
 
     df_sett = pd.DataFrame(data)
 
@@ -527,7 +556,7 @@ def parse_settlement_data(
 
     if not results:
         st.error("Не удалось рассчитать углы. Возможно, для выбранных марок нет данных в одном из циклов.")
-        return None
+        return None, None, None
 
     df_angles = pd.DataFrame(results)
     logger.info(f"Углы по осадкам рассчитаны для {len(df_angles)} циклов.")
@@ -817,6 +846,10 @@ if uploaded_file is not None:
         if df_incl is None:
             st.stop()
 
+        # Валидация углов
+        if not validate_angles(df_incl):
+            st.warning("Проверьте данные: некоторые углы выходят за пределы разумных значений.")
+
         cycles = sorted(df_incl['Цикл'].unique())
         default_zero_cycle = cycles[0] if cycles else None
         if st.session_state.zero_cycle is None or st.session_state.zero_cycle not in cycles:
@@ -946,17 +979,18 @@ if uploaded_file is not None:
                     )
 
                     if st.button("🔄 Применить параметры", type="primary"):
-                        st.session_state.zero_cycle = zero_cycle
-                        st.session_state.alpha0_x = alpha0_x
-                        st.session_state.alpha0_y = alpha0_y
-                        st.session_state.L = L
-                        st.session_state.df_incl = apply_parameters(
-                            df_incl,
-                            zero_cycle,
-                            alpha0_x,
-                            alpha0_y,
-                            L
-                        )
+                        with st.spinner("Пересчёт данных..."):
+                            st.session_state.zero_cycle = zero_cycle
+                            st.session_state.alpha0_x = alpha0_x
+                            st.session_state.alpha0_y = alpha0_y
+                            st.session_state.L = L
+                            st.session_state.df_incl = apply_parameters(
+                                df_incl,
+                                zero_cycle,
+                                alpha0_x,
+                                alpha0_y,
+                                L
+                            )
                         st.success("Параметры обновлены!")
 
             with col_right:
@@ -972,18 +1006,23 @@ if uploaded_file is not None:
                 if selected_floors_for_table:
                     df_display = st.session_state.df_incl
                     df_filtered = df_display[df_display['Этаж'].isin(selected_floors_for_table)].copy()
-                    pivot_x = df_filtered.pivot(index='Этаж', columns='Цикл', values='αx_abs')
-                    pivot_y = df_filtered.pivot(index='Этаж', columns='Цикл', values='αy_abs')
-
-                    pivot_x.columns = [cycle_display_map.get(c, c) for c in pivot_x.columns]
-                    pivot_y.columns = [cycle_display_map.get(c, c) for c in pivot_y.columns]
-
-                    tab_x, tab_y = st.tabs(["📊 αx (градусы, абсолютные)", "📊 αy (градусы, абсолютные)"])
-                    with tab_x:
-                        st.dataframe(pivot_x, use_container_width=True, height=300)
-                    with tab_y:
-                        st.dataframe(pivot_y, use_container_width=True, height=300)
-
+                    # Объединяем αx и αy в одну таблицу с мультииндексом для компактности
+                    df_melted = df_filtered.melt(
+                        id_vars=['Этаж', 'Цикл'],
+                        value_vars=['αx_abs', 'αy_abs'],
+                        var_name='Ось',
+                        value_name='Угол, °'
+                    )
+                    # Переименовываем ось для читаемости
+                    df_melted['Ось'] = df_melted['Ось'].map({'αx_abs': 'αx', 'αy_abs': 'αy'})
+                    pivot = df_melted.pivot_table(
+                        index=['Этаж', 'Цикл'],
+                        columns='Ось',
+                        values='Угол, °'
+                    ).reset_index()
+                    # Переименовываем колонки циклов в человеческий формат
+                    pivot['Цикл'] = pivot['Цикл'].map(cycle_display_map)
+                    st.dataframe(pivot, use_container_width=True, height=400)
                     st.caption(f"Показано записей: {len(df_filtered)} (абсолютные углы с учётом α0)")
 
                 else:
@@ -1084,21 +1123,22 @@ if uploaded_file is not None:
 
                     if st.button("Рассчитать углы по осадкам", type="primary"):
                         if len(corner_marks) == 4 and zero_cycle_sett is not None:
-                            result = parse_settlement_data(
-                                file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett,
-                                mark_col=mark_col, zero_cycle_sett=zero_cycle_sett,
-                                manual_osad_col=manual_osad_col if manual_osad_col >= 0 else None
-                            )
-                            if result is not None:
-                                df_sett_angles, marks_data, all_cycles_sett = result
-                                st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
-                                st.session_state.res_df_sett_angles = df_sett_angles
-                            else:
-                                st.error("Не удалось рассчитать углы. Проверьте правильность введённых данных.")
+                            with st.spinner("Расчёт углов по осадкам..."):
+                                result = parse_settlement_data(
+                                    file_bytes, selected_sett_sheet, corner_marks, L_sett, B_sett,
+                                    mark_col=mark_col, zero_cycle_sett=zero_cycle_sett,
+                                    manual_osad_col=manual_osad_col if manual_osad_col >= 0 else None
+                                )
+                                if result is not None and result[0] is not None:
+                                    df_sett_angles, marks_data, all_cycles_sett = result
+                                    st.success(f"✅ Углы по осадкам рассчитаны для {len(df_sett_angles)} циклов.")
+                                    st.session_state.res_df_sett_angles = df_sett_angles
+                                else:
+                                    st.error("Не удалось рассчитать углы. Проверьте правильность введённых данных.")
                         else:
                             st.error("Укажите 4 угловые марки и выберите нулевой цикл.")
 
-                    if 'res_df_sett_angles' in st.session_state and st.session_state.res_df_sett_angles is not None:
+                    if st.session_state.res_df_sett_angles is not None:
                         df_angles = st.session_state.res_df_sett_angles.copy()
                         st.subheader("Таблица углов крена по осадкам")
                         st.caption("**Примечание:** показаны углы для всех циклов (кроме нулевого, где значения равны 0).")
@@ -1118,11 +1158,11 @@ if uploaded_file is not None:
                 st.write(f"**Нулевой цикл:** {cycle_display_map[st.session_state.zero_cycle]}")
                 st.write(f"**αx0:** {st.session_state.alpha0_x:.3f}°, **αy0:** {st.session_state.alpha0_y:.3f}°")
                 st.write(f"**Высота этажа L:** {st.session_state.L:.1f} м")
-                if 'res_df_sett_angles' in st.session_state:
+                if st.session_state.res_df_sett_angles is not None:
                     st.write(f"**Осадки:** рассчитаны для {len(st.session_state.res_df_sett_angles)} циклов")
 
         # ============================================================
-        # ВКЛАДКА "3D-МОДЕЛЬ ЗДАНИЯ" (С ВЫПАДАЮЩИМ СПИСКОМ)
+        # ВКЛАДКА "3D-МОДЕЛЬ ЗДАНИЯ"
         # ============================================================
         with tab2:
             st.subheader("🏢 3D-модель здания с креном и наклономерами")
@@ -1146,9 +1186,8 @@ if uploaded_file is not None:
             if total_cycles == 0:
                 st.warning("Нет доступных циклов для отображения.")
             else:
-                # Выпадающий список вместо слайдера
                 if st.session_state.selected_cycle_key is None or st.session_state.selected_cycle_key not in cycle_keys:
-                    st.session_state.selected_cycle_key = cycle_keys[-1]  # последний по умолчанию
+                    st.session_state.selected_cycle_key = cycle_keys[-1]
 
                 selected_cycle_display = st.selectbox(
                     "Выберите цикл для отображения",
@@ -1156,7 +1195,6 @@ if uploaded_file is not None:
                     index=cycle_keys.index(st.session_state.selected_cycle_key),
                     help="Выберите цикл, для которого будет построена 3D-модель."
                 )
-                # Находим ключ по отображаемому названию
                 selected_cycle_key = [k for k, v in cycle_display_map.items() if v == selected_cycle_display][0]
                 st.session_state.selected_cycle_key = selected_cycle_key
 
@@ -1165,23 +1203,24 @@ if uploaded_file is not None:
                 building_length = st.session_state.get("building_length", DEFAULT_BUILDING_LENGTH)
                 building_width = st.session_state.get("building_width", DEFAULT_BUILDING_WIDTH)
                 vertical_scale = st.session_state.get("vertical_scale", DEFAULT_VERTICAL_SCALE)
-                df_sett_angles = st.session_state.get("res_df_sett_angles", None)
+                df_sett_angles = st.session_state.get("res_df_sett_angles")
                 floors = st.session_state.get("selected_floors", [])
 
-                fig_building = plot_building_3d(
-                    df_incl_processed,
-                    selected_cycle_key,
-                    st.session_state.L,
-                    building_length,
-                    building_width,
-                    vertical_scale,
-                    df_sett_angles,
-                    floors
-                )
-                if fig_building:
-                    st.plotly_chart(fig_building, use_container_width=True)
-                else:
-                    st.warning("Для выбранного цикла нет данных на выбранных этажах. Попробуйте изменить выбор этажей или цикл.")
+                with st.spinner("Построение 3D-модели..."):
+                    fig_building = plot_building_3d(
+                        df_incl_processed,
+                        selected_cycle_key,
+                        st.session_state.L,
+                        building_length,
+                        building_width,
+                        vertical_scale,
+                        df_sett_angles,
+                        floors
+                    )
+                    if fig_building:
+                        st.plotly_chart(fig_building, use_container_width=True)
+                    else:
+                        st.warning("Для выбранного цикла нет данных на выбранных этажах. Попробуйте изменить выбор этажей или цикл.")
 
             # ---------- Раздел с формулами ----------
             with st.expander("📐 Как строится модель (формулы и пояснения)", expanded=False):
