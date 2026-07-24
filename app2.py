@@ -2,11 +2,24 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.io as pio
 import io
 import re
 import logging
+import time
+import base64
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
+import tempfile
+import os
+
+# Попытка импорта для PDF
+try:
+    from fpdf import FPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+    st.warning("Для экспорта PDF установите библиотеку fpdf: pip install fpdf")
 
 # ------------------------------------------------------------
 # НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -57,13 +70,19 @@ def init_session_state():
         'sett_calculated': False,
         'available_marks': [],
         'horizontal_scale': DEFAULT_HORIZONTAL_SCALE,
+        # Новые параметры для ручного задания столбцов осадок
+        'manual_cycle_columns': {},  # словарь {cycle_label: column_index}
+        'use_manual_columns': False,
+        # Для анимации
+        'animation_playing': False,
+        'animation_cycle_index': 0,
     }
     for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
 
 # ------------------------------------------------------------
-# ПАРСЕР EXCEL
+# ПАРСЕР EXCEL (с поддержкой ручного задания столбцов)
 # ------------------------------------------------------------
 class ExcelParser:
     @staticmethod
@@ -176,7 +195,12 @@ class ExcelParser:
     @classmethod
     def parse_settlement(cls, file_bytes: bytes, sheet_name: str,
                          corner_marks: List[str], L_fund: float, B_fund: float,
-                         mark_col: int = 0) -> Tuple[Optional[pd.DataFrame], List[str]]:
+                         mark_col: int = 0,
+                         manual_columns: Dict[str, int] = None) -> Tuple[Optional[pd.DataFrame], List[str]]:
+        """
+        Парсит осадки. Если manual_columns задан (словарь {цикл: номер_столбца}),
+        использует их, иначе автоматический поиск.
+        """
         try:
             df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None)
         except Exception as e:
@@ -209,40 +233,54 @@ class ExcelParser:
                 mark_str = str(int(mark_num)) if mark_num == int(mark_num) else str(mark_num)
                 available_marks.append(mark_str)
 
+        # Определяем столбцы с осадками
         cycle_to_col = {}
-        total_cols = len(df_raw.columns)
-        for label in cycle_labels:
-            col_idx = None
-            for c in range(total_cols):
-                cell = df_raw.iloc[header_row, c]
-                if pd.notna(cell) and label in str(cell):
-                    col_idx = c
-                    break
-            if col_idx is None:
-                st.warning(f"Не найден заголовок для цикла {label}")
-                continue
-
-            found_col = None
-            for c in range(col_idx + 1, min(col_idx + 6, total_cols)):
-                has_numbers = False
-                for r in mark_rows:
-                    val = df_raw.iloc[r, c]
-                    if pd.notna(val) and isinstance(val, (int, float)):
-                        has_numbers = True
+        if manual_columns:
+            # Используем ручные настройки
+            for label in cycle_labels:
+                if label in manual_columns and manual_columns[label] < len(df_raw.columns):
+                    cycle_to_col[label] = manual_columns[label]
+                else:
+                    st.warning(f"Для цикла {label} не указан корректный столбец. Попробуйте автоматический поиск.")
+            if not cycle_to_col:
+                st.error("Ручные настройки не дали ни одного столбца. Используйте автоматический поиск.")
+                return None, available_marks
+        else:
+            # Автоматический поиск (как раньше)
+            total_cols = len(df_raw.columns)
+            for label in cycle_labels:
+                col_idx = None
+                for c in range(total_cols):
+                    cell = df_raw.iloc[header_row, c]
+                    if pd.notna(cell) and label in str(cell):
+                        col_idx = c
                         break
-                if has_numbers:
-                    found_col = c
-                    break
+                if col_idx is None:
+                    st.warning(f"Не найден заголовок для цикла {label}")
+                    continue
 
-            if found_col is not None:
-                cycle_to_col[label] = found_col
-            else:
-                st.warning(f"Не найден столбец с осадками для цикла {label}")
+                found_col = None
+                for c in range(col_idx + 1, min(col_idx + 6, total_cols)):
+                    has_numbers = False
+                    for r in mark_rows:
+                        val = df_raw.iloc[r, c]
+                        if pd.notna(val) and isinstance(val, (int, float)):
+                            has_numbers = True
+                            break
+                    if has_numbers:
+                        found_col = c
+                        break
+
+                if found_col is not None:
+                    cycle_to_col[label] = found_col
+                else:
+                    st.warning(f"Не найден столбец с осадками для цикла {label}")
 
         if not cycle_to_col:
             st.error("Не найдены столбцы с осадками. Убедитесь, что в листе 'Стилобат' после каждого заголовка цикла идут числовые значения осадок.")
             return None, available_marks
 
+        # Собираем данные
         marks_data = {}
         for cycle, col_idx in cycle_to_col.items():
             marks_data[cycle] = {}
@@ -364,7 +402,6 @@ class DataProcessor:
         if df_cycle.empty:
             return None, None, None, None, None, None
 
-        # Получаем этажи и углы
         floor_data = []
         for _, row in df_cycle.iterrows():
             floor = row['Этаж']
@@ -372,7 +409,6 @@ class DataProcessor:
             alpha_y = row['αy_abs']
             floor_data.append((floor, alpha_x, alpha_y))
 
-        # Накапливаем смещения с интерполяцией
         points = [(0, 0, 0)]
         cum_x, cum_y = 0.0, 0.0
         prev_floor = 0
@@ -418,7 +454,6 @@ class Visualizer:
                 df_cycle, cycle, building_length, building_width,
                 vertical_scale, floors, df_sett_angles=None,
                 horizontal_scale=1.0):
-        # Масштабируем смещения
         points_scaled = [(p[0]*horizontal_scale, p[1]*horizontal_scale, p[2]) for p in points]
         top_x_scaled = top_x * horizontal_scale
         top_y_scaled = top_y * horizontal_scale
@@ -566,20 +601,6 @@ class Visualizer:
         )
         return fig
 
-    @staticmethod
-    def plot_displacement_trends(df_incl_filtered: pd.DataFrame, floors: List[int],
-                                 cycle_display_map: Dict[str, str],
-                                 horizontal_scale: float = 1.0):
-        # Упрощённая версия – используем уже рассчитанные смещения
-        # Для точности лучше пересчитать с tan, но здесь для простоты используем существующие данные
-        if not floors:
-            return None, None
-
-        # Для каждого цикла и этажа извлекаем смещения из df_incl_filtered
-        # Но в df_incl_filtered смещений нет – они вычисляются в calculate_displacement
-        # Поэтому мы будем использовать функцию plot_trends_with_tan из основного кода
-        return None, None
-
 # ------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ТРЕНДОВ
 # ------------------------------------------------------------
@@ -701,6 +722,144 @@ def build_summary_table(df_filtered: pd.DataFrame, selected_floors: List[int],
     return pd.DataFrame(results_list)
 
 # ------------------------------------------------------------
+# ЭКСПОРТ В PDF
+# ------------------------------------------------------------
+def export_pdf_report(df_filtered, df_sett, selected_floors, cycle_display,
+                      building_length, building_width, vertical_scale, horizontal_scale,
+                      L, cycles, zero_cycle, alpha0_x, alpha0_y, filter_type, filter_window,
+                      df_incl, all_floors):
+    if not PDF_AVAILABLE:
+        st.error("Библиотека fpdf не установлена. Установите: pip install fpdf")
+        return None
+
+    # Генерируем временные файлы для изображений
+    temp_dir = tempfile.mkdtemp()
+    images = []
+
+    try:
+        # Создаём PDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+
+        # Заголовок
+        pdf.set_font("Arial", 'B', 16)
+        pdf.cell(200, 10, txt="Отчёт по мониторингу деформаций здания", ln=True, align='C')
+        pdf.ln(10)
+
+        pdf.set_font("Arial", size=10)
+        pdf.cell(200, 6, txt=f"Дата отчёта: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True)
+        pdf.cell(200, 6, txt=f"Файл: загруженный Excel", ln=True)
+        pdf.ln(5)
+
+        # Параметры
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 6, txt="Параметры расчёта", ln=True)
+        pdf.set_font("Arial", size=10)
+        pdf.cell(200, 5, txt=f"Нулевой цикл: {cycle_display.get(zero_cycle, zero_cycle)}", ln=True)
+        pdf.cell(200, 5, txt=f"Высота этажа L: {L} м", ln=True)
+        pdf.cell(200, 5, txt=f"αx0: {alpha0_x:.3f}°, αy0: {alpha0_y:.3f}°", ln=True)
+        pdf.cell(200, 5, txt=f"Фильтр: {filter_type}, окно: {filter_window}", ln=True)
+        pdf.cell(200, 5, txt=f"Длина здания: {building_length} м, Ширина: {building_width} м", ln=True)
+        pdf.cell(200, 5, txt=f"Вертикальный масштаб: {vertical_scale}, Горизонтальный масштаб: {horizontal_scale}", ln=True)
+        pdf.ln(5)
+
+        # Сводная таблица
+        df_summary = build_summary_table(df_filtered, selected_floors, L, vertical_scale, cycle_display)
+        if not df_summary.empty:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(200, 6, txt="Сводная таблица результатов", ln=True)
+            pdf.set_font("Arial", size=8)
+            # Ограничим число колонок для печати
+            cols_to_show = ['Цикл', 'Крен, °', 'Смещение X верха, м', 'Смещение Y верха, м']
+            # Добавляем смещения для этажей
+            for col in df_summary.columns:
+                if col.startswith('Смещ X эт.') or col.startswith('Смещ Y эт.'):
+                    cols_to_show.append(col)
+            df_print = df_summary[cols_to_show].copy()
+            # Преобразуем в строки для PDF
+            for i, row in df_print.iterrows():
+                # Печатаем строку
+                line = ' | '.join([f"{k}: {v}" for k, v in row.items()])
+                pdf.set_font("Arial", size=7)
+                pdf.cell(200, 4, txt=line[:200], ln=True)  # обрезаем, если слишком длинная
+            pdf.ln(5)
+
+        # 3D-модель для каждого цикла? Сделаем только для последнего или выбранного
+        # Для отчёта добавим изображения для нескольких ключевых циклов (первый, последний)
+        cycles_to_plot = []
+        if cycles:
+            cycles_to_plot.append(cycles[0])
+            if len(cycles) > 1:
+                cycles_to_plot.append(cycles[-1])
+            if len(cycles) > 2:
+                mid = len(cycles)//2
+                cycles_to_plot.append(cycles[mid])
+
+        for cycle in cycles_to_plot:
+            points, top_x, top_y, top_z, max_z, df_cycle = DataProcessor.calculate_displacement(
+                df_filtered, cycle, selected_floors, L, vertical_scale
+            )
+            if points is None:
+                continue
+            fig = Visualizer.plot_3d(
+                points, top_x, top_y, top_z, max_z,
+                df_cycle, cycle, building_length, building_width,
+                vertical_scale, selected_floors, df_sett,
+                horizontal_scale=horizontal_scale
+            )
+            # Сохраняем как PNG
+            img_path = os.path.join(temp_dir, f"model_{cycle}.png")
+            pio.write_image(fig, img_path, width=800, height=600, scale=1)
+            images.append(img_path)
+
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(200, 6, txt=f"3D-модель для цикла {cycle_display.get(cycle, cycle)}", ln=True)
+            pdf.image(img_path, x=10, y=30, w=190)
+
+        # Тренды (добавим графики трендов)
+        fig_x, fig_y = plot_trends_with_tan(df_filtered, selected_floors, L, vertical_scale, cycle_display, horizontal_scale)
+        if fig_x is not None and fig_y is not None:
+            img_x_path = os.path.join(temp_dir, "trend_x.png")
+            img_y_path = os.path.join(temp_dir, "trend_y.png")
+            pio.write_image(fig_x, img_x_path, width=800, height=400)
+            pio.write_image(fig_y, img_y_path, width=800, height=400)
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(200, 6, txt="Тренды смещений по оси X", ln=True)
+            pdf.image(img_x_path, x=10, y=30, w=190)
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(200, 6, txt="Тренды смещений по оси Y", ln=True)
+            pdf.image(img_y_path, x=10, y=30, w=190)
+
+        # Заключительная страница
+        pdf.add_page()
+        pdf.set_font("Arial", size=10)
+        pdf.cell(200, 6, txt="Отчёт сгенерирован автоматически.", ln=True)
+        pdf.cell(200, 6, txt="Данные для отчёта взяты из загруженного Excel-файла.", ln=True)
+
+        # Возвращаем PDF в байтах
+        pdf_output = pdf.output(dest='S').encode('latin1')
+        return pdf_output
+
+    except Exception as e:
+        st.error(f"Ошибка при создании PDF: {e}")
+        return None
+    finally:
+        # Удаляем временные файлы
+        for img in images:
+            try:
+                os.remove(img)
+            except:
+                pass
+        try:
+            os.rmdir(temp_dir)
+        except:
+            pass
+
+# ------------------------------------------------------------
 # СТРАНИЦА "ФОРМАТ ДАННЫХ"
 # ------------------------------------------------------------
 def show_data_format():
@@ -716,14 +875,6 @@ def show_data_format():
     - Первая строка – заголовки циклов. В ячейках, начиная со столбца **B**, должны быть написаны **Цикл ДД.ММ.ГГГГ** (например, `Цикл 01.01.2025`). Между датами могут быть пустые столбцы (они игнорируются).
     - Начиная со второй строки – данные по этажам. В **столбце A** – номер этажа (число). В столбцах B, C, D, E, … – **попарно** значения углов αx и αy для каждого цикла. То есть для одного цикла используются **две соседние ячейки**: сначала αx, затем αy.
 
-    **Пример:**
-    |       | A   | B                 | C   | D                 | E   | ... |
-    |-------|-----|-------------------|-----|-------------------|-----|-----|
-    | **1** |     | **Цикл 01.01.2025**|     | **Цикл 10.01.2025**|     |     |
-    | **2** | **5**| 0.12              | 0.05| 0.15              | 0.07| ... |
-    | **3** | **15**| 0.08             | 0.03| 0.09              | 0.04| ... |
-    | **4** | **27**| 0.05             | 0.02| 0.06              | 0.02| ... |
-
     ### 2. Лист **«Стилобат»** (опционально)
     Содержит данные осадок угловых марок фундамента.
 
@@ -731,24 +882,7 @@ def show_data_format():
     - Первая строка – заголовки циклов (аналогично листу «Наклономер»). В столбцах, где написано «Цикл ...», через один-два столбца должны быть значения осадок (можно подписать «Осадка, мм»).
     - В **столбце A** – номера марок (числа). В строках – значения осадок (в мм) для каждого цикла (по одному числу на цикл).
 
-    **Пример:**
-    |       | A   | B                 | C          | D                 | E          | ... |
-    |-------|-----|-------------------|------------|-------------------|------------|-----|
-    | **1** |     | **Цикл 01.01.2025**| **Осадка** | **Цикл 10.01.2025**| **Осадка** |     |
-    | **2** | **1**|                   | 0.0        |                   | 0.5        | ... |
-    | **3** | **4**|                   | 0.2        |                   | 0.7        | ... |
-    | **4** | **11**|                  | 0.1        |                   | 0.6        | ... |
-    | **5** | **14**|                  | 0.3        |                   | 0.8        | ... |
-
-    > **Важно:** Нумерация марок должна соответствовать углам здания: сначала нижний левый, затем нижний правый, затем верхний левый, затем верхний правый.
-
-    ## 🔧 Геодезические принципы расчёта
-    - Смещения вычисляются через **тангенс** угла наклона (`dx = h * tan(α)`), что соответствует геодезической практике.
-    - Между этажами выполняется **линейная интерполяция** углов для более точного моделирования деформационной кривой.
-    - Оси X и Y соответствуют **продольной и поперечной осям здания** (план здания).
-    - **Абсолютный крен** – это полное отклонение верха здания от вертикали (оранжевая стрелка).
-    - **Крен фундамента** – наклон плоскости фундамента, рассчитанный по осадкам (фиолетовая стрелка).
-    - При включённой коррекции по осадкам из абсолютного крена вычитается крен фундамента, что даёт **деформацию надземной части** (изгиб).
+    **Примечание:** Если автоматический поиск столбцов с осадками не сработал, вы можете вручную указать номера столбцов в боковой панели (включите опцию "Ручное задание столбцов").
     """)
 
 # ------------------------------------------------------------
@@ -856,12 +990,14 @@ def main():
                                               key="correct_by_sett",
                                               help="Из абсолютных углов вычитаются углы крена фундамента (a_град, b_град) из данных осадок. Это позволяет оценить деформацию надземной части (изгиб).")
 
-        # ----- ОСАДКИ -----
+        # ----- ОСАДКИ (с ручным заданием столбцов) -----
         df_sett = None
         available_marks = []
         if "Стилобат" in all_sheets:
             st.sidebar.markdown("---")
             st.sidebar.subheader("🏗️ Данные осадок")
+            use_manual = st.sidebar.checkbox("Ручное задание столбцов", value=st.session_state.get("use_manual_columns", False),
+                                             key="use_manual_columns")
             corner_marks_str = st.sidebar.text_input("Марки (через запятую)", 
                                                      value=st.session_state.get("corner_marks", DEFAULT_CORNER_MARKS),
                                                      key="corner_marks_input",
@@ -873,10 +1009,29 @@ def main():
             else:
                 L_fund = st.sidebar.number_input("Длина фундамента, м", value=70.46, step=0.1, key="L_fund")
                 B_fund = st.sidebar.number_input("Ширина фундамента, м", value=18.69, step=0.1, key="B_fund")
+
+                # Если ручной режим, показываем поля для ввода номеров столбцов для каждого цикла
+                manual_columns = {}
+                if use_manual:
+                    st.sidebar.markdown("**Укажите номера столбцов с осадками (индексы, начиная с 0):**")
+                    # Сначала парсим заголовки, чтобы узнать циклы
+                    try:
+                        df_raw_test = pd.read_excel(io.BytesIO(file_bytes), sheet_name="Стилобат", header=None)
+                        _, cycle_names = ExcelParser._extract_cycle_headers(df_raw_test)
+                        cycle_labels = ExcelParser._parse_cycle_labels(cycle_names)
+                        for label in cycle_labels:
+                            col_num = st.sidebar.number_input(f"Цикл {label} (столбец)", min_value=0, step=1, value=0, key=f"manual_col_{label}")
+                            manual_columns[label] = col_num
+                    except Exception as e:
+                        st.sidebar.error(f"Не удалось прочитать заголовки для ручного задания: {e}")
+                else:
+                    manual_columns = None
+
                 if st.sidebar.button("🔄 Пересчитать осадки", type="primary"):
                     with st.status("Расчёт осадок...", expanded=False) as status:
                         df_sett, available_marks = ExcelParser.parse_settlement(
-                            file_bytes, "Стилобат", marks, L_fund, B_fund
+                            file_bytes, "Стилобат", marks, L_fund, B_fund,
+                            manual_columns=manual_columns if use_manual else None
                         )
                         if df_sett is not None:
                             st.session_state["df_sett_angles"] = df_sett
@@ -894,6 +1049,7 @@ def main():
         else:
             st.sidebar.info("Лист 'Стилобат' не найден. Осадки не используются.")
 
+        # Получаем значения параметров
         zero_cycle = st.session_state["zero_cycle_select"]
         L = st.session_state["L_input"]
         alpha0_x = st.session_state["alpha0_x"]
@@ -964,46 +1120,101 @@ def main():
             else:
                 st.info("Нет данных для отображения.")
 
-        # ----- ВКЛАДКА "3D-МОДЕЛЬ" -----
+        # ----- ВКЛАДКА "3D-МОДЕЛЬ" с анимацией -----
         with tab_model:
             st.subheader("🏢 3D-модель здания (tan, интерполяция)")
             st.caption("Смещения рассчитаны через тангенс угла, между этажами выполнена линейная интерполяция.")
             if len(cycles) == 0:
                 st.warning("Нет циклов для отображения.")
             else:
-                default_cycle = st.session_state["selected_cycle_key"] if st.session_state["selected_cycle_key"] in cycles else cycles[-1]
-                selected_cycle = st.selectbox("Выберите цикл", cycles, index=cycles.index(default_cycle),
-                                              format_func=lambda x: cycle_display[x], key="cycle_3d")
-                st.session_state["selected_cycle_key"] = selected_cycle
+                # Выбор режима: одиночный цикл или анимация
+                mode = st.radio("Режим отображения", ["Одиночный цикл", "Анимация"], horizontal=True, key="model_mode")
+                if mode == "Одиночный цикл":
+                    default_cycle = st.session_state["selected_cycle_key"] if st.session_state["selected_cycle_key"] in cycles else cycles[-1]
+                    selected_cycle = st.selectbox("Выберите цикл", cycles, index=cycles.index(default_cycle),
+                                                  format_func=lambda x: cycle_display[x], key="cycle_3d")
+                    st.session_state["selected_cycle_key"] = selected_cycle
 
-                @st.cache_data
-                def get_displacement(df_filtered, selected_cycle, selected_floors, L, vertical_scale):
-                    return DataProcessor.calculate_displacement(
-                        df_filtered, selected_cycle, selected_floors, L, vertical_scale
-                    )
+                    @st.cache_data
+                    def get_displacement(df_filtered, selected_cycle, selected_floors, L, vertical_scale):
+                        return DataProcessor.calculate_displacement(
+                            df_filtered, selected_cycle, selected_floors, L, vertical_scale
+                        )
 
-                result = get_displacement(df_filtered, selected_cycle, selected_floors, L, vertical_scale)
-                if result[0] is None:
-                    st.warning("Для выбранного цикла и этажей нет данных.")
-                else:
-                    points, top_x, top_y, top_z, max_z, df_cycle = result
-                    fig = Visualizer.plot_3d(
-                        points, top_x, top_y, top_z, max_z,
-                        df_cycle, selected_cycle, building_length, building_width,
-                        vertical_scale, selected_floors, df_sett,
-                        horizontal_scale=horizontal_scale
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    result = get_displacement(df_filtered, selected_cycle, selected_floors, L, vertical_scale)
+                    if result[0] is None:
+                        st.warning("Для выбранного цикла и этажей нет данных.")
+                    else:
+                        points, top_x, top_y, top_z, max_z, df_cycle = result
+                        fig = Visualizer.plot_3d(
+                            points, top_x, top_y, top_z, max_z,
+                            df_cycle, selected_cycle, building_length, building_width,
+                            vertical_scale, selected_floors, df_sett,
+                            horizontal_scale=horizontal_scale
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
 
-                    st.markdown("### 📐 Результаты для выбранного цикла")
-                    col1, col2, col3 = st.columns(3)
+                        st.markdown("### 📐 Результаты для выбранного цикла")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            kren = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
+                            st.metric("Общий крен здания (абсолютный)", f"{kren:.3f}°")
+                        with col2:
+                            st.metric("Смещение верха (X)", f"{top_x:.3f} м")
+                        with col3:
+                            st.metric("Смещение верха (Y)", f"{top_y:.3f} м")
+                else:  # Анимация
+                    st.info("Автоматическое переключение циклов с интервалом 1 секунда.")
+                    # Кнопки управления
+                    col1, col2, col3 = st.columns([1, 1, 1])
                     with col1:
-                        kren = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
-                        st.metric("Общий крен здания (абсолютный)", f"{kren:.3f}°")
+                        if st.button("⏯ Play/Pause", key="play_btn"):
+                            st.session_state["animation_playing"] = not st.session_state.get("animation_playing", False)
                     with col2:
-                        st.metric("Смещение верха (X)", f"{top_x:.3f} м")
+                        if st.button("⏹ Stop", key="stop_btn"):
+                            st.session_state["animation_playing"] = False
+                            st.session_state["animation_cycle_index"] = 0
                     with col3:
-                        st.metric("Смещение верха (Y)", f"{top_y:.3f} м")
+                        st.write(f"Цикл {st.session_state.get('animation_cycle_index', 0)+1}/{len(cycles)}")
+
+                    # Слайдер для ручного выбора
+                    idx = st.slider("Цикл", 0, len(cycles)-1, st.session_state.get("animation_cycle_index", 0), key="anim_slider")
+                    st.session_state["animation_cycle_index"] = idx
+                    selected_cycle = cycles[idx]
+
+                    # Если играет, увеличиваем индекс
+                    if st.session_state.get("animation_playing", False):
+                        time.sleep(1)  # пауза 1 секунда
+                        next_idx = (idx + 1) % len(cycles)
+                        st.session_state["animation_cycle_index"] = next_idx
+                        st.rerun()  # принудительно обновляем страницу
+
+                    # Отображаем текущий цикл
+                    @st.cache_data
+                    def get_displacement_anim(df_filtered, selected_cycle, selected_floors, L, vertical_scale):
+                        return DataProcessor.calculate_displacement(
+                            df_filtered, selected_cycle, selected_floors, L, vertical_scale
+                        )
+
+                    result = get_displacement_anim(df_filtered, selected_cycle, selected_floors, L, vertical_scale)
+                    if result[0] is None:
+                        st.warning("Нет данных для этого цикла.")
+                    else:
+                        points, top_x, top_y, top_z, max_z, df_cycle = result
+                        fig = Visualizer.plot_3d(
+                            points, top_x, top_y, top_z, max_z,
+                            df_cycle, selected_cycle, building_length, building_width,
+                            vertical_scale, selected_floors, df_sett,
+                            horizontal_scale=horizontal_scale
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # Показываем метрики
+                        kren = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Крен", f"{kren:.3f}°")
+                        col2.metric("Смещение X", f"{top_x:.3f} м")
+                        col3.metric("Смещение Y", f"{top_y:.3f} м")
 
         # ----- ВКЛАДКА "ТРЕНДЫ СМЕЩЕНИЙ" -----
         with tab_trends:
@@ -1018,7 +1229,25 @@ def main():
                 else:
                     st.info("Нет данных для отображения трендов.")
 
-        # ----- ВКЛАДКА "О ПРИБОРЕ" -----
+        # ----- КНОПКА ЭКСПОРТА PDF -----
+        if st.sidebar.button("📄 Экспорт отчёта в PDF", type="primary"):
+            if not PDF_AVAILABLE:
+                st.sidebar.error("Установите fpdf: pip install fpdf")
+            else:
+                with st.spinner("Генерация PDF..."):
+                    pdf_bytes = export_pdf_report(
+                        df_filtered, df_sett, selected_floors, cycle_display,
+                        building_length, building_width, vertical_scale, horizontal_scale,
+                        L, cycles, zero_cycle, alpha0_x, alpha0_y, filter_type, filter_window,
+                        df_incl, all_floors
+                    )
+                    if pdf_bytes:
+                        b64 = base64.b64encode(pdf_bytes).decode()
+                        href = f'<a href="data:application/pdf;base64,{b64}" download="report.pdf">📥 Скачать PDF</a>'
+                        st.sidebar.markdown(href, unsafe_allow_html=True)
+                        st.sidebar.success("PDF готов к скачиванию!")
+
+        # ----- ВКЛАДКА "О ПРИБОРЕ" (без изменений) -----
         with tab_info:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
             st.markdown("""
