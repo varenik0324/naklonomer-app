@@ -30,7 +30,7 @@ DEFAULT_ALPHA0_Y = 0.0
 DEFAULT_CORNER_MARKS = "1,4,11,14"
 
 # ------------------------------------------------------------
-# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ (только для данных и флагов, не для виджетов)
+# ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ
 # ------------------------------------------------------------
 def init_session_state():
     defaults = {
@@ -246,7 +246,6 @@ class ExcelParser:
             return None, available_marks
 
         # Собираем все доступные марки
-        available_marks = []
         for idx in mark_rows:
             mark_num = df_raw.iloc[idx, mark_col]
             if isinstance(mark_num, (int, float)):
@@ -782,7 +781,8 @@ def main():
             else:
                 L_fund = st.sidebar.number_input("Длина фундамента, м", value=70.46, step=0.1, key="L_fund")
                 B_fund = st.sidebar.number_input("Ширина фундамента, м", value=18.69, step=0.1, key="B_fund")
-                if st.sidebarbutton("🔄 Пересчитать осадки", type="primary"):
+                # ИСПРАВЛЕНО: st.sidebar.button вместо st.sidebarbutton
+                if st.sidebar.button("🔄 Пересчитать осадки", type="primary"):
                     with st.status("Расчёт осадок...", expanded=False) as status:
                         df_sett, available_marks = ExcelParser.parse_settlement(
                             file_bytes, "Стилобат", marks, L_fund, B_fund
@@ -842,7 +842,7 @@ def main():
                                                values=['αx_abs', 'αy_abs', 'Смещение X', 'Смещение Y'],
                                                aggfunc='first').reset_index()
                 df_pivot['Цикл'] = df_pivot['Цикл'].map(cycle_display)
-                st.dataframe(df_pivot, width="stretch", height=400)
+                st.dataframe(df_pivot, use_container_width=True, height=400)
 
                 if filter_type != "Нет":
                     with st.expander("📊 Сравнение с сырыми данными (без фильтра)"):
@@ -851,7 +851,7 @@ def main():
                                                                 values=['αx_abs', 'αy_abs'],
                                                                 aggfunc='first').reset_index()
                         df_raw_pivot['Цикл'] = df_raw_pivot['Цикл'].map(cycle_display)
-                        st.dataframe(df_raw_pivot, width="stretch", height=300)
+                        st.dataframe(df_raw_pivot, use_container_width=True, height=300)
 
             st.caption(f"Фильтр: {filter_type}, окно = {filter_window}")
             if correct_by_sett and df_sett is not None and not df_sett.empty:
@@ -859,7 +859,7 @@ def main():
 
             if df_sett is not None and not df_sett.empty:
                 st.subheader("📐 Крен по осадкам")
-                st.dataframe(df_sett, width="stretch")
+                st.dataframe(df_sett, use_container_width=True)
 
             # ----- ТАБЛИЦА РЕЗУЛЬТАТОВ ДЛЯ ВСЕХ ЦИКЛОВ -----
             st.subheader("📊 Сводная таблица результатов по всем циклам")
@@ -892,7 +892,7 @@ def main():
                         results_list.append(row_data)
                 if results_list:
                     df_results = pd.DataFrame(results_list)
-                    st.dataframe(df_results, width="stretch", height=400)
+                    st.dataframe(df_results, use_container_width=True, height=400)
                     # Кнопка скачивания CSV
                     csv = df_results.to_csv(index=False).encode('utf-8')
                     st.download_button(
@@ -932,7 +932,7 @@ def main():
                         df_cycle, selected_cycle, building_length, building_width,
                         vertical_scale, selected_floors, df_sett
                     )
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
 
                     st.markdown("### 📐 Результаты для выбранного цикла")
                     col1, col2, col3 = st.columns(3)
@@ -953,8 +953,8 @@ def main():
                 figs = Visualizer.plot_displacement_trends(df_filtered, selected_floors, cycle_display)
                 if figs is not None:
                     fig1, fig2 = figs
-                    st.plotly_chart(fig1, width="stretch")
-                    st.plotly_chart(fig2, width="stretch")
+                    st.plotly_chart(fig1, use_container_width=True)
+                    st.plotly_chart(fig2, use_container_width=True)
                 else:
                     st.info("Нет данных для отображения трендов.")
 
