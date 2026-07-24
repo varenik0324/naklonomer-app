@@ -6,3 +6,4 @@ openpyxl
 xlsxwriter
 reportlab
 python-docx
+fpdf
