@@ -27,7 +27,8 @@ DEFAULT_ALPHA0_X = 0.0
 DEFAULT_ALPHA0_Y = 0.0
 DEFAULT_CORNER_MARKS = "1,4,11,14"
 MAX_ANGLE_DEG = 30
-INTERP_STEP = 0.5  # шаг интерполяции для расчёта смещений (м)
+INTERP_STEP = 0.5
+DEFAULT_HORIZONTAL_SCALE = 1.0
 
 # ------------------------------------------------------------
 # ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ СЕССИИ
@@ -55,13 +56,14 @@ def init_session_state():
         'corner_marks': DEFAULT_CORNER_MARKS,
         'sett_calculated': False,
         'available_marks': [],
+        'horizontal_scale': DEFAULT_HORIZONTAL_SCALE,
     }
     for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
 
 # ------------------------------------------------------------
-# ПАРСЕР EXCEL (без изменений, но оставлен для полноты)
+# ПАРСЕР EXCEL
 # ------------------------------------------------------------
 class ExcelParser:
     @staticmethod
@@ -295,7 +297,7 @@ class ExcelParser:
         return pd.DataFrame(results), available_marks
 
 # ------------------------------------------------------------
-# ОБРАБОТЧИК ДАННЫХ (с геодезическими улучшениями)
+# ОБРАБОТЧИК ДАННЫХ (геодезические улучшения)
 # ------------------------------------------------------------
 class DataProcessor:
     @staticmethod
@@ -325,7 +327,6 @@ class DataProcessor:
             df['αy_abs'] = df['αy_abs'] - df['b_град']
             df.drop(columns=['a_град', 'b_град'], inplace=True)
 
-        # Смещения пока не вычисляем – они будут пересчитаны с использованием tan и интерполяции
         return df
 
     @staticmethod
@@ -355,70 +356,46 @@ class DataProcessor:
     @st.cache_data
     def calculate_displacement(df_incl_filtered: pd.DataFrame, cycle: str, floors: List[int],
                                L: float, vertical_scale: float = 1.0):
-        """
-        Вычисляет накопленные смещения по этажам с использованием:
-        - tan(α) для перехода от угла к смещению (геодезически корректно)
-        - линейной интерполяции углов между этажами для более точной формы деформации
-        """
         df_cycle = df_incl_filtered[df_incl_filtered['Цикл'] == cycle]
         if floors:
             df_cycle = df_cycle[df_cycle['Этаж'].isin(floors)]
         df_cycle = df_cycle.sort_values('Этаж')
 
-        # Добавляем фиктивную точку для фундамента (этаж 0 с нулевыми углами)
-        # Если этаж 0 не задан, считаем, что фундамент вертикален (углы=0)
-        floor_data = []
-        prev_floor = 0
-        prev_alpha_x = 0.0
-        prev_alpha_y = 0.0
+        if df_cycle.empty:
+            return None, None, None, None, None, None
 
+        # Получаем этажи и углы
+        floor_data = []
         for _, row in df_cycle.iterrows():
             floor = row['Этаж']
             alpha_x = row['αx_abs']
             alpha_y = row['αy_abs']
             floor_data.append((floor, alpha_x, alpha_y))
-            prev_floor = floor
-            prev_alpha_x = alpha_x
-            prev_alpha_y = alpha_y
-
-        # Если нет данных, возвращаем None
-        if not floor_data:
-            return None, None, None, None, None, None
 
         # Накапливаем смещения с интерполяцией
-        points = [(0, 0, 0)]  # фундамент
+        points = [(0, 0, 0)]
         cum_x, cum_y = 0.0, 0.0
         prev_floor = 0
         prev_alpha_x = 0.0
         prev_alpha_y = 0.0
 
         for floor, alpha_x, alpha_y in floor_data:
-            # Участок от prev_floor до floor
             height_segment = (floor - prev_floor) * L
             if height_segment <= 0:
                 continue
-            # Разбиваем участок на мелкие шаги для линейной интерполяции углов
             steps = int(np.ceil(height_segment / INTERP_STEP))
             step_height = height_segment / steps
 
             for i in range(steps):
-                # Текущая высота от prev_floor
                 h_local = (i + 1) * step_height
-                # Доля пройденного пути
                 t = h_local / height_segment if height_segment > 0 else 0
-                # Линейная интерполяция углов
                 alpha_x_interp = prev_alpha_x + (alpha_x - prev_alpha_x) * t
                 alpha_y_interp = prev_alpha_y + (alpha_y - prev_alpha_y) * t
-                # Пересчёт в радианы
-                alpha_x_rad = np.radians(alpha_x_interp)
-                alpha_y_rad = np.radians(alpha_y_interp)
-                # Смещение на шаге: dx = dh * tan(α)
-                dx = step_height * np.tan(alpha_x_rad)
-                dy = step_height * np.tan(alpha_y_rad)
+                dx = step_height * np.tan(np.radians(alpha_x_interp))
+                dy = step_height * np.tan(np.radians(alpha_y_interp))
                 cum_x += dx
                 cum_y += dy
 
-            # Запоминаем точку на этаже
             z = floor * L * vertical_scale
             points.append((cum_x, cum_y, z))
             prev_floor = floor
@@ -433,13 +410,19 @@ class DataProcessor:
         return points, top_x, top_y, top_z, max_z, df_cycle
 
 # ------------------------------------------------------------
-# ВИЗУАЛИЗАТОР (без изменений, но оставлен для полноты)
+# ВИЗУАЛИЗАТОР (с горизонтальным масштабом)
 # ------------------------------------------------------------
 class Visualizer:
     @staticmethod
     def plot_3d(points, top_x, top_y, top_z, max_z,
                 df_cycle, cycle, building_length, building_width,
-                vertical_scale, floors, df_sett_angles=None):
+                vertical_scale, floors, df_sett_angles=None,
+                horizontal_scale=1.0):
+        # Масштабируем смещения
+        points_scaled = [(p[0]*horizontal_scale, p[1]*horizontal_scale, p[2]) for p in points]
+        top_x_scaled = top_x * horizontal_scale
+        top_y_scaled = top_y * horizontal_scale
+
         if floors:
             df_floors = df_cycle[df_cycle['Этаж'].isin(floors)].sort_values('Этаж')
         else:
@@ -454,19 +437,19 @@ class Visualizer:
             name='Исходная вертикаль'
         ))
 
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        zs = [p[2] for p in points]
+        xs = [p[0] for p in points_scaled]
+        ys = [p[1] for p in points_scaled]
+        zs = [p[2] for p in points_scaled]
         fig.add_trace(go.Scatter3d(
             x=xs, y=ys, z=zs,
             mode='lines+markers',
             line=dict(color='red', width=6),
             marker=dict(size=10, color='red', symbol='circle'),
-            name='Деформированная ось (tan, интерполяция)'
+            name=f'Деформированная ось (масштаб смещений ×{horizontal_scale:.1f})'
         ))
 
         if not df_floors.empty:
-            for i, (x, y, z) in enumerate(points[1:], start=1):
+            for i, (x, y, z) in enumerate(points_scaled[1:], start=1):
                 if i-1 >= len(df_floors):
                     break
                 floor = df_floors.iloc[i-1]['Этаж']
@@ -481,13 +464,13 @@ class Visualizer:
                 fig.add_trace(go.Scatter3d(
                     x=[x], y=[y], z=[z],
                     mode='text',
-                    text=[f"<b>{floor}эт</b><br>{dist:.3f} м"],
+                    text=[f"<b>{floor}эт</b><br>{dist:.3f} м (масшт.)"],
                     textposition='top center',
                     textfont=dict(color='darkgreen', size=11),
                     showlegend=False
                 ))
 
-            for i, (x, y, z) in enumerate(points[1:], start=1):
+            for i, (x, y, z) in enumerate(points_scaled[1:], start=1):
                 if i-1 >= len(df_floors):
                     break
                 floor = df_floors.iloc[i-1]['Этаж']
@@ -504,7 +487,7 @@ class Visualizer:
                 ))
 
         fig.add_trace(go.Scatter3d(
-            x=[0, top_x], y=[0, top_y], z=[0, top_z],
+            x=[0, top_x_scaled], y=[0, top_y_scaled], z=[0, top_z],
             mode='lines+markers',
             line=dict(color='darkorange', width=8),
             marker=dict(size=12, color='darkorange', symbol='diamond'),
@@ -512,7 +495,7 @@ class Visualizer:
         ))
         kren_angle = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
         fig.add_trace(go.Scatter3d(
-            x=[top_x], y=[top_y], z=[top_z],
+            x=[top_x_scaled], y=[top_y_scaled], z=[top_z],
             mode='text',
             text=[f"<b>Крен: {kren_angle:.2f}°</b>"],
             textposition='top center',
@@ -525,7 +508,7 @@ class Visualizer:
             if not sett_row.empty:
                 a = sett_row['a_мм_м'].values[0]
                 b = sett_row['b_мм_м'].values[0]
-                scale = 10.0
+                scale = 10.0 * horizontal_scale
                 dx_os = a * scale
                 dy_os = b * scale
                 fig.add_trace(go.Scatter3d(
@@ -546,14 +529,14 @@ class Visualizer:
         ]
         for cx, cy in corners:
             fig.add_trace(go.Scatter3d(
-                x=[cx, cx + top_x],
-                y=[cy, cy + top_y],
+                x=[cx, cx + top_x_scaled],
+                y=[cy, cy + top_y_scaled],
                 z=[0, top_z],
                 mode='lines',
                 line=dict(color='rgba(50,50,50,0.6)', width=2),
                 showlegend=False
             ))
-        for z_level, (x_shift, y_shift) in [(0, (0, 0)), (top_z, (top_x, top_y))]:
+        for z_level, (x_shift, y_shift) in [(0, (0, 0)), (top_z, (top_x_scaled, top_y_scaled))]:
             shifted_corners = [(cx + x_shift, cy + y_shift) for cx, cy in corners]
             for i in range(4):
                 x1, y1 = shifted_corners[i]
@@ -566,7 +549,7 @@ class Visualizer:
                 ))
 
         fig.update_layout(
-            title=f"<b>3D-модель здания – цикл {cycle}</b> (верт. масштаб {vertical_scale:.1f})",
+            title=f"<b>3D-модель здания – цикл {cycle}</b> (верт. масштаб {vertical_scale:.1f}, гор. масштаб {horizontal_scale:.1f})",
             scene=dict(
                 xaxis_title="Смещение X, м",
                 yaxis_title="Смещение Y, м",
@@ -585,84 +568,58 @@ class Visualizer:
 
     @staticmethod
     def plot_displacement_trends(df_incl_filtered: pd.DataFrame, floors: List[int],
-                                 cycle_display_map: Dict[str, str]):
-        """
-        Строит 2D-графики накопленных смещений X и Y по времени для выбранных этажей.
-        Для корректного отображения смещений необходимо пересчитать их с использованием tan
-        и интерполяции. Однако здесь мы используем уже вычисленные смещения из df_incl_filtered.
-        В текущей версии смещения в df_incl_filtered не вычислены – их нужно добавить.
-        Для простоты мы будем вычислять их на лету, используя те же принципы.
-        """
+                                 cycle_display_map: Dict[str, str],
+                                 horizontal_scale: float = 1.0):
+        # Упрощённая версия – используем уже рассчитанные смещения
+        # Для точности лучше пересчитать с tan, но здесь для простоты используем существующие данные
         if not floors:
-            return None
+            return None, None
 
-        # Создаём копию и для каждого цикла пересчитываем смещения с tan и интерполяцией
-        # Это ресурсоёмко, но для 2D-графиков можно использовать упрощённый подход:
-        # для каждого этажа берём смещения, вычисленные ранее (если они есть)
-        # В текущей реализации смещения не хранятся в df_incl_filtered, поэтому пересчитаем их
+        # Для каждого цикла и этажа извлекаем смещения из df_incl_filtered
+        # Но в df_incl_filtered смещений нет – они вычисляются в calculate_displacement
+        # Поэтому мы будем использовать функцию plot_trends_with_tan из основного кода
+        return None, None
 
-        # Сначала сгруппируем по циклу и этажу, вычислим смещения упрощённо (sin) – но мы хотим tan.
-        # Можно просто использовать те же точки, что и в 3D, но для каждого цикла отдельно.
-        # Это требует отдельного расчёта. Для простоты я добавлю вычисление смещений для трендов
-        # с использованием tan и интерполяции, но это займёт время.
-        # В целях экономии времени я предлагаю оставить этот метод без изменений,
-        # а смещения для трендов вычислять при построении графика.
-
-        # Для краткости я пропущу детальную реализацию здесь, но в финальном коде она будет.
-        # Сейчас просто вернём заглушку.
-        return None
-
-# Вспомогательная функция для построения трендов с геодезически корректными смещениями
+# ------------------------------------------------------------
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ТРЕНДОВ
+# ------------------------------------------------------------
 def plot_trends_with_tan(df_filtered: pd.DataFrame, floors: List[int],
-                         L: float, vertical_scale: float, cycle_display_map: Dict[str, str]):
-    """
-    Строит графики смещений по времени с использованием tan и интерполяции.
-    """
+                         L: float, vertical_scale: float, cycle_display_map: Dict[str, str],
+                         horizontal_scale: float = 1.0):
     if not floors:
         return None, None
 
-    # Для каждого цикла и этажа рассчитаем смещения
     cycles = sorted(df_filtered['Цикл'].unique())
     data_x = {floor: [] for floor in floors}
     data_y = {floor: [] for floor in floors}
     dates = []
 
     for cycle in cycles:
-        df_cycle = df_filtered[df_filtered['Цикл'] == cycle]
-        # Получаем точки с интерполяцией
         points, _, _, _, _, _ = DataProcessor.calculate_displacement(
             df_filtered, cycle, floors, L, vertical_scale
         )
         if points is None:
             continue
-        # points содержит (x,y,z) для каждого этажа (начиная с фундамента)
-        # Нам нужно соотнести точки с этажами
-        # Поскольку calculate_displacement возвращает точки для всех этажей,
-        # мы можем сопоставить их с этажами из df_cycle
+        df_cycle = df_filtered[df_filtered['Цикл'] == cycle]
         df_cycle_sorted = df_cycle.sort_values('Этаж')
-        dates.append(cycle)  # сохраняем дату цикла
+        dates.append(cycle)
         for i, (x, y, z) in enumerate(points[1:], start=1):
             if i-1 < len(df_cycle_sorted):
                 floor = df_cycle_sorted.iloc[i-1]['Этаж']
                 if floor in floors:
-                    data_x[floor].append(x)
-                    data_y[floor].append(y)
-        # Если точек меньше, чем этажей – добавляем NaN
+                    data_x[floor].append(x * horizontal_scale)
+                    data_y[floor].append(y * horizontal_scale)
 
-    # Преобразуем в DataFrame для построения
     df_trend = pd.DataFrame({'Цикл': dates})
     for floor in floors:
-        # Выравниваем длину списков
         x_vals = data_x.get(floor, [])
         y_vals = data_y.get(floor, [])
-        # Дополняем до длины dates
         while len(x_vals) < len(dates):
             x_vals.append(np.nan)
             y_vals.append(np.nan)
         df_trend[f'X_{floor}'] = x_vals
         df_trend[f'Y_{floor}'] = y_vals
 
-    # Преобразуем циклы в даты
     df_trend['Цикл_дата'] = pd.to_datetime(df_trend['Цикл'], errors='coerce')
     df_trend = df_trend.sort_values('Цикл_дата')
 
@@ -691,7 +648,7 @@ def plot_trends_with_tan(df_filtered: pd.DataFrame, floors: List[int],
             ))
 
     fig_x.update_layout(
-        title="Накопленные смещения по оси X (tan, интерполяция)",
+        title=f"Накопленные смещения по оси X (масштаб ×{horizontal_scale:.1f})",
         xaxis_title="Цикл (дата)",
         yaxis_title="Смещение X, м",
         template="plotly_white",
@@ -699,7 +656,7 @@ def plot_trends_with_tan(df_filtered: pd.DataFrame, floors: List[int],
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     fig_y.update_layout(
-        title="Накопленные смещения по оси Y (tan, интерполяция)",
+        title=f"Накопленные смещения по оси Y (масштаб ×{horizontal_scale:.1f})",
         xaxis_title="Цикл (дата)",
         yaxis_title="Смещение Y, м",
         template="plotly_white",
@@ -710,7 +667,41 @@ def plot_trends_with_tan(df_filtered: pd.DataFrame, floors: List[int],
     return fig_x, fig_y
 
 # ------------------------------------------------------------
-# СТРАНИЦА "О ФОРМАТЕ ДАННЫХ" (обновлена)
+# СВОДНАЯ ТАБЛИЦА
+# ------------------------------------------------------------
+def build_summary_table(df_filtered: pd.DataFrame, selected_floors: List[int],
+                        L: float, vertical_scale: float,
+                        cycle_display_map: Dict[str, str]) -> pd.DataFrame:
+    if df_filtered.empty or not selected_floors:
+        return pd.DataFrame()
+
+    cycles_all = sorted(df_filtered['Цикл'].unique())
+    results_list = []
+    for cyc in cycles_all:
+        points, top_x, top_y, top_z, max_z, df_cycle = DataProcessor.calculate_displacement(
+            df_filtered, cyc, selected_floors, L, vertical_scale
+        )
+        if points is None:
+            continue
+        kren = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
+        row_data = {
+            'Цикл': cycle_display_map.get(cyc, cyc),
+            'Крен, °': round(kren, 3),
+            'Смещение X верха, м': round(top_x, 3),
+            'Смещение Y верха, м': round(top_y, 3)
+        }
+        df_cycle_sorted = df_cycle.sort_values('Этаж')
+        for i, floor in enumerate(selected_floors):
+            if i < len(points) - 1:
+                x, y, z = points[i+1]
+                row_data[f'Смещ X эт.{floor}, м'] = round(x, 3)
+                row_data[f'Смещ Y эт.{floor}, м'] = round(y, 3)
+        results_list.append(row_data)
+
+    return pd.DataFrame(results_list)
+
+# ------------------------------------------------------------
+# СТРАНИЦА "ФОРМАТ ДАННЫХ"
 # ------------------------------------------------------------
 def show_data_format():
     st.markdown("""
@@ -759,42 +750,6 @@ def show_data_format():
     - **Крен фундамента** – наклон плоскости фундамента, рассчитанный по осадкам (фиолетовая стрелка).
     - При включённой коррекции по осадкам из абсолютного крена вычитается крен фундамента, что даёт **деформацию надземной части** (изгиб).
     """)
-
-# ------------------------------------------------------------
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ СВОДНОЙ ТАБЛИЦЫ
-# ------------------------------------------------------------
-def build_summary_table(df_filtered: pd.DataFrame, selected_floors: List[int],
-                        L: float, vertical_scale: float,
-                        cycle_display_map: Dict[str, str]) -> pd.DataFrame:
-    if df_filtered.empty or not selected_floors:
-        return pd.DataFrame()
-
-    cycles_all = sorted(df_filtered['Цикл'].unique())
-    results_list = []
-    for cyc in cycles_all:
-        # Для каждого цикла пересчитываем смещения с использованием tan и интерполяции
-        points, top_x, top_y, top_z, max_z, df_cycle = DataProcessor.calculate_displacement(
-            df_filtered, cyc, selected_floors, L, vertical_scale
-        )
-        if points is None:
-            continue
-        kren = np.degrees(np.arctan2(np.sqrt(top_x**2 + top_y**2), top_z))
-        row_data = {
-            'Цикл': cycle_display_map.get(cyc, cyc),
-            'Крен, °': round(kren, 3),
-            'Смещение X верха, м': round(top_x, 3),
-            'Смещение Y верха, м': round(top_y, 3)
-        }
-        # Добавляем смещения для каждого этажа
-        df_cycle_sorted = df_cycle.sort_values('Этаж')
-        for i, floor in enumerate(selected_floors):
-            if i < len(points) - 1:
-                x, y, z = points[i+1]
-                row_data[f'Смещ X эт.{floor}, м'] = round(x, 3)
-                row_data[f'Смещ Y эт.{floor}, м'] = round(y, 3)
-        results_list.append(row_data)
-
-    return pd.DataFrame(results_list)
 
 # ------------------------------------------------------------
 # ГЛАВНОЕ ПРИЛОЖЕНИЕ
@@ -886,6 +841,15 @@ def main():
         st.sidebar.caption("При масштабе >1 углы на модели визуально искажаются – используйте для наглядности.")
 
         st.sidebar.markdown("---")
+        st.sidebar.subheader("🎯 Масштаб смещений (для визуализации)")
+        horizontal_scale = st.sidebar.slider(
+            "Горизонтальный масштаб",
+            min_value=0.5, max_value=20.0, value=st.session_state.get("horizontal_scale", 1.0), step=0.5,
+            key="horizontal_scale",
+            help="Увеличивает горизонтальные смещения для лучшей видимости деформаций. Не влияет на расчёты."
+        )
+
+        st.sidebar.markdown("---")
         st.sidebar.subheader("📐 Коррекция по осадкам")
         correct_by_sett = st.sidebar.checkbox("Вычитать крен фундамента из показаний наклономера",
                                               value=st.session_state["correct_by_sett"],
@@ -930,7 +894,6 @@ def main():
         else:
             st.sidebar.info("Лист 'Стилобат' не найден. Осадки не используются.")
 
-        # Получаем значения параметров из виджетов
         zero_cycle = st.session_state["zero_cycle_select"]
         L = st.session_state["L_input"]
         alpha0_x = st.session_state["alpha0_x"]
@@ -942,8 +905,8 @@ def main():
         building_width = st.session_state["building_width"]
         vertical_scale = st.session_state["vertical_scale"]
         correct_by_sett = st.session_state["correct_by_sett"]
+        horizontal_scale = st.session_state["horizontal_scale"]
 
-        # Обработка данных (кэшируем)
         @st.cache_data
         def process_raw(df, zero_cycle, a0x, a0y, L, df_sett, correct):
             return DataProcessor.apply_parameters(df, zero_cycle, a0x, a0y, L, df_sett, correct)
@@ -987,7 +950,6 @@ def main():
                 st.subheader("📐 Крен по осадкам")
                 st.dataframe(df_sett, use_container_width=True)
 
-            # Сводная таблица результатов
             st.subheader("📊 Сводная таблица результатов по всем циклам (tan, интерполяция)")
             df_summary = build_summary_table(df_filtered, selected_floors, L, vertical_scale, cycle_display)
             if not df_summary.empty:
@@ -1028,7 +990,8 @@ def main():
                     fig = Visualizer.plot_3d(
                         points, top_x, top_y, top_z, max_z,
                         df_cycle, selected_cycle, building_length, building_width,
-                        vertical_scale, selected_floors, df_sett
+                        vertical_scale, selected_floors, df_sett,
+                        horizontal_scale=horizontal_scale
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
@@ -1048,15 +1011,14 @@ def main():
             if not selected_floors:
                 st.warning("Выберите хотя бы один этаж в боковой панели.")
             else:
-                # Используем новую функцию с tan и интерполяцией
-                fig_x, fig_y = plot_trends_with_tan(df_filtered, selected_floors, L, vertical_scale, cycle_display)
+                fig_x, fig_y = plot_trends_with_tan(df_filtered, selected_floors, L, vertical_scale, cycle_display, horizontal_scale)
                 if fig_x is not None and fig_y is not None:
                     st.plotly_chart(fig_x, use_container_width=True)
                     st.plotly_chart(fig_y, use_container_width=True)
                 else:
                     st.info("Нет данных для отображения трендов.")
 
-        # ----- ВКЛАДКА "О ПРИБОРЕ" (без изменений) -----
+        # ----- ВКЛАДКА "О ПРИБОРЕ" -----
         with tab_info:
             st.header("📘 Накладной инклинометр УСМ-ИСН-П")
             st.markdown("""
